@@ -46,7 +46,7 @@ GitHub Actions workflow [`.github/workflows/trimble-agentic-docs-mcp.yml`](.gith
 
 ### Remote server (systemd + nginx)
 
-Default bind port is **8305** (override with `TRIMBLE_AGENTIC_MCP_PORT`). For a public path such as `http://52.13.6.105/mcp/agent-studio`, set **`TRIMBLE_AGENTIC_MCP_PATH=/mcp/agent-studio`** on the MCP service so it matches nginx. Copy and adapt:
+Default bind port is **8305** (override with `TRIMBLE_AGENTIC_MCP_PORT`). For a public path such as `http://52.13.6.105/mcp/agent-studio`, set **`TRIMBLE_AGENTIC_MCP_PATH=/mcp/agent-studio`** on the MCP service so it matches nginx. Set **`TRIMBLE_AGENTIC_MCP_ALLOWED_HOSTS`** to the same hostname or IP clients use in the URL (e.g. `52.13.6.105`) so the MCP library accepts the `Host` header from nginx (otherwise Cursor sees **421 Invalid Host header**). Copy and adapt:
 
 - [`trimble-agentic-docs-mcp/examples/trimble-agentic-docs-mcp.service.example`](trimble-agentic-docs-mcp/examples/trimble-agentic-docs-mcp.service.example)
 - [`trimble-agentic-docs-mcp/examples/nginx-mcp-agent-studio.conf.example`](trimble-agentic-docs-mcp/examples/nginx-mcp-agent-studio.conf.example)

@@ -19,6 +19,9 @@ on the server to expose sync/cache tools (`sync_*`, `refresh_api_docs_cache`, `g
 
 Env: TRIMBLE_AGENTIC_API_DOCS_DIR, TRIMBLE_AGENTIC_URLS_FILE, TRIMBLE_AGENTIC_DEV_DOCS_CACHE_DIR,
 TRIMBLE_AGENTIC_MCP_HOST, TRIMBLE_AGENTIC_MCP_PORT, TRIMBLE_AGENTIC_MCP_PATH (or FASTMCP_*).
+Behind nginx with a public Host (e.g. 52.13.6.105), set TRIMBLE_AGENTIC_MCP_ALLOWED_HOSTS to that
+hostname or IP (comma-separated). Or set TRIMBLE_AGENTIC_MCP_DISABLE_DNS_REBINDING=1 (not recommended
+on untrusted networks). Alternatively, nginx may proxy_set_header Host 127.0.0.1:PORT to match defaults.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from trimble_agentic_docs_mcp.json_output import truncate_json_response
 from trimble_agentic_docs_mcp.manifest_summary import summarize_openapi_manifest
 from trimble_agentic_docs_mcp.operation_guide import build_operation_guide
 from trimble_agentic_docs_mcp.runtime_state import get_store
+from trimble_agentic_docs_mcp.transport_security_bind import transport_security_for_bind
 
 
 def _mcp_listen_settings() -> tuple[str, int, str]:
@@ -72,6 +76,7 @@ mcp = FastMCP(
     host=_http_host,
     port=_http_port,
     streamable_http_path=_http_path,
+    transport_security=transport_security_for_bind(_http_host),
 )
 
 

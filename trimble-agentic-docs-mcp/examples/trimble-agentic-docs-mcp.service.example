@@ -19,6 +19,8 @@ Environment=TRIMBLE_AGENTIC_DEV_DOCS_CACHE_DIR=/agent-studio-mcp/docs/cached/dev
 Environment=TRIMBLE_AGENTIC_MCP_HOST=127.0.0.1
 Environment=TRIMBLE_AGENTIC_MCP_PORT=8305
 Environment=TRIMBLE_AGENTIC_MCP_PATH=/mcp/agent-studio
+# Match the Host nginx sends (public IP or DNS); avoids MCP 421 Invalid Host header
+# Environment=TRIMBLE_AGENTIC_MCP_ALLOWED_HOSTS=52.13.6.105
 ExecStart=/agent-studio-mcp/.venv/bin/python -m trimble_agentic_docs_mcp
 Restart=always
 RestartSec=5
