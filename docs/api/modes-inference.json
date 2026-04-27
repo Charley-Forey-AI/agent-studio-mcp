@@ -1,0 +1,2583 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Model Gateway",
+    "description": "# Overview\n\nThe Model Gateway is the unified inference gateway for the Agentic AI Platform. It provides OpenAI-compatible APIs for chat completions, embeddings, and image generation across multiple cloud providers with automatic failover, content safety validation, and enterprise-grade resilience.\n\n## Environment URLs\n\n| Environment | Model Gateway (APIM) | TID Authorization Server |\n|-------------|---------------------|--------------------------|\n| **Development** | `https://models.dev.trimble-ai.com` | `https://stage.id.trimblecloud.com` |\n| **Staging** | `https://models.stage.trimble-ai.com` | `https://stage.id.trimblecloud.com` |\n| **Production** | `https://models.ai.trimble.com` | `https://id.trimble.com` |\n\n**Base Path:** All OpenAI-compatible endpoints use the `/openai/v1` base path.\n\n**Full Example:** `{{BASE_URL}}/openai/v1/chat/completions`\n\n> **Note:** Throughout this documentation, `{{BASE_URL}}` refers to the Model Gateway URL for your target environment (e.g., `https://models.dev.trimble-ai.com` for development).\n\n## Getting Started\n\nThe API is protected by OAuth2.0 and requires a valid TID access token in the Authorization header. Refer to [TID Authentication Guide](https://developer.trimble.com/docs/authentication) for details.\n\n**Required TID Token Scopes:**\n- `openid` - Get user identity\n- `models` - Use AI model inference endpoints\n- `profile` - Get user profile information\n\n## Key Architecture Concepts\n\n### Unified Model IDs\n\nThe Model Gateway uses **unified model identifiers** that abstract away cloud provider details. When you request `model: \"gpt-4o\"`, the system automatically:\n\n1. Looks up the model in the deployment catalog\n2. Retrieves the multi-cloud deployment configuration\n3. Transforms the unified ID to provider-specific deployment names (e.g., `gpt-4o` → `gpt-4o-dzs` for Azure)\n4. Routes to the appropriate cloud provider with failover support\n\nThis means you use a single model name regardless of which cloud provider serves the request.\n\n### Multi-Cloud Failover\n\nRequests are routed through a **priority-based failover chain**:\n\n```\nRequest (model=\"claude-4.5-sonnet\")\n  ↓\nTry Azure (priority=1)\n  ├─ Try eastus2 → Try westus → Try all 11 regions...\n  └─ If ALL regions fail → Try next provider\n  ↓\nTry Vertex AI (priority=2)\n  ├─ Try global location → Try other locations...\n  └─ Return first success\n```\n\n**Failover Behavior:**\n- **Client errors (4xx)**: No failover - the error indicates an invalid request\n- **408 Request Timeout**: Triggers failover - may succeed on another provider\n- **429 Rate Limit**: Triggers failover - another provider may have capacity\n- **5xx Server Errors**: Triggers failover - provider is having issues\n\n---\n\n## Content Safety (Model Guard Integration)\n\nAll inference requests are validated through **Model Guard** before being sent to AI providers. This provides:\n\n- **Harmful Content Detection**: Analyzes text for hate speech, violence, sexual content, self-harm, and harassment\n- **Jailbreak Detection**: Identifies attempts to bypass AI safety guidelines\n- **Prompt Injection Detection**: Catches hidden instructions and manipulation attempts\n- **Image Safety Analysis**: Validates images for explicit, violent, or harmful visual content\n\n**When Content is Blocked:**\n- Returns HTTP 400 (Bad Request) with `type: \"content_policy_violation\"` and `code: \"content_blocked\"`\n- The `recommendation` field indicates the action: `allow`, `review`, or `block`\n- The `flagged_categories` array lists which safety categories triggered the block\n- Violation records are stored in Model Guard for audit when risk score >= 0.3\n\n**Configuration:**\n- `MODEL_GUARD_ENABLED`: Enable/disable content safety (default: true)\n- `MODEL_GUARD_URL`: Model Guard service URL\n- `MODEL_GUARD_TIMEOUT`: Timeout in seconds (default: 10, max: 60)\n\n---\n\n## Resilience & High Availability\n\n### Regional Load Balancing\n\nEach cloud provider implements regional load balancing with health-aware routing:\n\n- **Strategy**: Round-robin with health awareness (configurable)\n- **Health Tracking**: Per-endpoint success/failure tracking\n  - Unhealthy threshold: 3 consecutive failures mark endpoint unhealthy\n  - Healthy threshold: 2 consecutive successes mark endpoint healthy\n- **Auto-Recovery**: Endpoints automatically recover when healthy\n\n### Circuit Breaker Pattern\n\nEach regional endpoint has its own circuit breaker:\n\n- **Failure Threshold**: 3 failures opens the circuit\n- **Recovery Timeout**: 30 seconds before half-open state\n- **Half-Open**: Allows test requests to check if endpoint recovered\n\n### Retry with Exponential Backoff\n\nRetryable errors trigger automatic retries:\n\n- **First Retry**: Immediate (first-fast-retry)\n- **Subsequent Retries**: Exponential backoff (1s, 2s, 3s... up to 10s max)\n- **Retryable Errors**: 5xx errors, 429 rate limit, connection errors\n\n---\n\n## Security & Validation Differences from OpenAI\n\n### Image Editing: Pre-Upload Required\n\n**Unlike standard OpenAI**, the Model Gateway does **not** accept base64-encoded images directly in image editing requests. This is a security measure to ensure:\n\n1. All images pass through content safety analysis\n2. Images are stored with audit trail and metadata\n3. Domain allowlist prevents arbitrary external image access\n\n**Image Editing Workflow:**\n\n```bash\n# Step 1: Upload your image\ncurl -X POST {{BASE_URL}}/openai/v1/files \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -F \"file=@source_image.png\" \\\n  -F \"purpose=image-edit\"\n\n# Response includes the signed content URL:\n# { \"url\": \"{{BASE_URL}}/v1/files/file_abc123/content?exp=...&sig=...\" }\n\n# Step 2: Use the returned URL in your edit request\ncurl -X POST {{BASE_URL}}/openai/v1/images/edits \\\n  -H \"Authorization: Bearer $TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"gpt-image-1\",\n    \"image\": \"{{BASE_URL}}/v1/files/file_abc123/content?exp=...&sig=...\",\n    \"prompt\": \"Add a rainbow in the sky\"\n  }'\n```\n\n**Validation Rules:**\n- Only `http://` or `https://` URLs accepted (no `data:` URIs, no base64)\n- URL must end with `/content` path (from `/v1/files` upload)\n- Domain must be in the allowlist (configured per environment)\n\n---\n\n## Provider-Specific Features (extra_body)\n\nThe `extra_body` parameter allows passing provider-specific options that aren't part of the standard OpenAI API.\n\n### Anthropic Claude Models\n\nEnable extended thinking for complex reasoning tasks:\n\n```json\n{\n  \"model\": \"claude-3-5-sonnet\",\n  \"messages\": [...],\n  \"extra_body\": {\n    \"thinking\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 2048\n    },\n    \"metadata\": {\n      \"user_id\": \"user-123\"\n    },\n    \"service_tier\": \"priority\",\n    \"top_k\": 40\n  }\n}\n```\n\n**Supported Parameters:**\n| Parameter | Description |\n|-----------|-------------|\n| `thinking` | Extended thinking configuration `{\"type\": \"enabled\", \"budget_tokens\": N}` |\n| `metadata` | Request metadata for tracking |\n| `service_tier` | Priority capacity selection (`priority`, `standard`) |\n| `mcp_servers` | MCP servers array for tool use |\n| `container` | Container identifier for session reuse |\n| `top_k` | Top-K sampling parameter |\n\n**Note**: Thinking blocks are filtered from responses - they don't appear in OpenAI format output.\n\n### Gemini Models (Chat & Image Generation)\n\nConfigure safety settings and Gemini-specific parameters:\n\n```json\n{\n  \"model\": \"gemini-2.0-flash\",\n  \"messages\": [...],\n  \"extra_body\": {\n    \"safetySettings\": [\n      {\n        \"category\": \"HARM_CATEGORY_DANGEROUS_CONTENT\",\n        \"threshold\": \"BLOCK_ONLY_HIGH\"\n      }\n    ],\n    \"thinking_level\": \"medium\",\n    \"topK\": 40,\n    \"topP\": 0.95\n  }\n}\n```\n\n**Supported Parameters:**\n| Parameter | Description |\n|-----------|-------------|\n| `safetySettings` | Array of safety filter configurations |\n| `thinking_level` | For Gemini 3: `\"low\"`, `\"medium\"`, `\"high\"` |\n| `topK` | Top-K sampling (alternative to top_p) |\n| `topP` | Nucleus sampling parameter |\n| `imageSize` | For image generation: `\"1K\"`, `\"2K\"`, `\"4K\"` |\n\n### Gemini Image Generation (via Chat Completions)\n\nGemini can generate images through the chat completions endpoint with `responseModalities`:\n\n```json\n{\n  \"model\": \"gemini-2.0-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a futuristic cityscape at sunset\"\n    }\n  ],\n  \"extra_body\": {\n    \"generationConfig\": {\n      \"responseModalities\": [\"TEXT\", \"IMAGE\"],\n      \"imageConfig\": {\n        \"aspectRatio\": \"16:9\",\n        \"imageSize\": \"2K\"\n      }\n    }\n  }\n}\n```\n\n**Recursive Image Editing with Gemini:**\n\nUse chat completions for iterative image editing - send the previous output back as input:\n\n```json\n{\n  \"model\": \"gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\"type\": \"text\", \"text\": \"Make the sky more purple and add stars\"},\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"{{BASE_URL}}/v1/files/file_previous/content?...\"\n          }\n        }\n      ]\n    }\n  ],\n  \"extra_body\": {\n    \"generationConfig\": {\n      \"responseModalities\": [\"TEXT\", \"IMAGE\"]\n    }\n  }\n}\n```\n\n### Imagen Models\n\nGoogle Imagen supports extensive customization:\n\n```json\n{\n  \"model\": \"imagen-3\",\n  \"prompt\": \"A serene mountain landscape\",\n  \"extra_body\": {\n    \"negativePrompt\": \"blurry, low quality, distorted\",\n    \"seed\": 12345,\n    \"addWatermark\": false,\n    \"sampleImageSize\": \"2K\",\n    \"enhancePrompt\": true,\n    \"personGeneration\": \"allow_adult\",\n    \"safetySetting\": \"block_some\",\n    \"language\": \"en\",\n    \"includeRaiReason\": true\n  }\n}\n```\n\n**Supported Parameters:**\n| Parameter | Description | Imagen 3 | Imagen 4 |\n|-----------|-------------|----------|----------|\n| `negativePrompt` | What to avoid in generation | Yes | No |\n| `seed` | Deterministic generation seed | Yes | Yes |\n| `addWatermark` | Add SynthID watermark (default: true) | Yes | Yes |\n| `sampleImageSize` | Output size: `\"1K\"`, `\"2K\"` | No | Yes |\n| `enhancePrompt` | Auto-enhance prompt | No | Yes |\n| `personGeneration` | `\"dont_allow\"`, `\"allow_adult\"`, `\"allow_all\"` | Yes | Yes |\n| `safetySetting` | `\"block_most\"`, `\"block_some\"`, `\"block_few\"` | Yes | Yes |\n| `language` | Prompt language code | Yes | Yes |\n| `includeRaiReason` | Include safety filter reasons | Yes | Yes |\n| `storageUri` | GCS URI for direct output storage | Yes | Yes |\n\n### Fal.ai Models (FLUX, Ideogram)\n\n> **Restricted Access:** Fal.ai models are currently restricted to the SketchUp division only. Contact the platform team if you need access.\n\n```json\n{\n  \"model\": \"fal-ai/flux-pro/v1.1-ultra\",\n  \"prompt\": \"A photorealistic portrait\",\n  \"extra_body\": {\n    \"guidance_scale\": 7.5,\n    \"num_inference_steps\": 50,\n    \"scheduler\": \"DPMSolverMultistep\",\n    \"sync_mode\": true,\n    \"loras\": [\n      {\"url\": \"https://...\", \"scale\": 0.8}\n    ]\n  }\n}\n```\n\n**Supported Parameters:**\n| Parameter | Description |\n|-----------|-------------|\n| `guidance_scale` | Classifier-free guidance scale |\n| `num_inference_steps` | Number of denoising steps |\n| `scheduler` | Diffusion scheduler algorithm |\n| `sync_mode` | Wait for completion vs return job ID |\n| `loras` | Array of LoRA models to apply |\n\n---\n\n## Access Restrictions\n\nModel Gateway access is restricted to the following services:\n\n- **Agent Service** - AI agent orchestration and tool use\n- **KB Service** - Knowledge base and document retrieval\n- **N8n** - Workflow automation\n\n---\n\n## Error Handling\n\nAll errors follow OpenAI error format:\n\n```json\n{\n  \"error\": {\n    \"message\": \"Detailed error description\",\n    \"type\": \"invalid_request_error\",\n    \"code\": \"invalid_image_format\",\n    \"param\": \"image\"\n  }\n}\n```\n\n**Common Error Types:**\n| HTTP Status | Error Type | Description |\n|-------------|------------|-------------|\n| 400 | `invalid_request_error` | Malformed request or invalid parameters |\n| 400 | `content_policy_violation` | Content blocked by Model Guard (code: `content_blocked`) |\n| 401 | `authentication_error` | Missing or invalid token |\n| 403 | `permission_denied_error` | Insufficient permissions |\n| 404 | `not_found_error` | Model or resource not found |\n| 429 | `rate_limit_error` | Rate limit exceeded |\n| 500 | `server_error` | Internal server error |\n| 502 | `bad_gateway` | Upstream provider error |\n| 503 | `service_unavailable` | All providers failed |\n| 504 | `timeout_error` | Model Guard timeout (code: `guard_timeout`) |\n\n---\n\n## Observability\n\nAll requests include comprehensive OpenTelemetry instrumentation:\n\n**Trace Attributes:**\n- `model.unified_id`: Requested model name\n- `model.vendor`: Model vendor (OpenAI, Google, Anthropic)\n- `model.capabilities`: Model capabilities (chat, embeddings, images)\n- `failover.chain_length`: Number of providers in failover chain\n- `failover.successful_provider`: Provider that served the request\n- `failover.attempts`: Number of providers tried\n\n**Metadata Headers:**\nPass these headers for correlation and tracking:\n- `x-request-id`: Client-provided request ID\n- `x-session-id`: Session identifier\n- `x-agents-agentId`, `x-agents-threadId`, `x-agents-runId`: Agent orchestration tracking\n- `x-kb-libraryId`, `x-kb-documentId`: Knowledge base tracking\n\n---\n\n## API Endpoints Reference\n\n### OpenAI-Compatible Endpoints\n\n| Endpoint | Method | Description |\n|----------|--------|-------------|\n| `/openai/v1/chat/completions` | POST | Create chat completion (supports streaming) |\n| `/openai/v1/embeddings` | POST | Generate text embeddings |\n| `/openai/v1/images/generations` | POST | Generate images from text prompt |\n| `/openai/v1/images/edits` | POST | Edit images with text prompt |\n| `/openai/v1/models` | GET | List all available models |\n\n### File Management Endpoints\n\n| Endpoint | Method | Description |\n|----------|--------|-------------|\n| `/v1/files` | POST | Create file upload slot (returns `uploadUrl` + `url`) |\n| `/v1/files/{id}` | GET | Get file metadata (owner only, JWT auth, `?includeContentUrl=true` for fresh `contentUrl`) |\n| `/v1/files/{id}/content` | GET | Access file content (signature auth, redirects to Azure SAS) |\n\n**Response Fields:**\n- `contentUrl` - 1-hour validity URL for accessing file content (only included when `?includeContentUrl=true`)\n\n**File Upload Flow:**\n1. POST `/v1/files` with `{\"filename\": \"image.png\", \"purpose\": \"image-edit\"}` → Returns `uploadUrl` and `url`\n2. PUT file content directly to `uploadUrl` (Azure Blob SAS URL)\n3. Use the `url` (render URL with signature) in image editing requests\n\n---\n\n## Support\n\n- **OpenAPI Specification**: `/openai/v1/openapi.json`\n- **Interactive Documentation**: `/openai/v1/docs`\n- **ReDoc Documentation**: `/openai/v1/redoc`\n- **Technical Support**: agentic-ai-platform@trimble.com\n",
+    "version": "1.0.899"
+  },
+  "servers": [
+    {
+      "url": "https://models.dev.trimble-ai.com",
+      "description": "Model Gateway URL"
+    }
+  ],
+  "paths": {
+    "/openai/v1/chat/completions": {
+      "post": {
+        "tags": [
+          "OpenAI - Chat"
+        ],
+        "summary": "Create Chat Completion",
+        "description": "Create a chat completion using OpenAI-compatible API.\n\nThis endpoint provides an OpenAI-compatible interface for chat completions,\nrouting requests to appropriate LLM providers (OpenAI, Google, Anthropic, etc.).\n\nThe endpoint uses official OpenAI SDK types to ensure 100% compatibility with\nthe OpenAI API specification.\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    request: The FastAPI request object\n    body: The chat completion request body (OpenAI SDK format)\n    user: Authenticated user information (from TID JWT)\n    chat_service: The chat completions service instance\n\nReturns:\n    JSONResponse with OpenAI-compatible chat completion response,\n    or StreamingResponse if stream=True\n\nRaises:\n    HTTPException: If authentication fails or request is invalid",
+        "operationId": "create_chat_completion_openai_v1_chat_completions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful chat completion",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/embeddings": {
+      "post": {
+        "tags": [
+          "OpenAI - Embeddings"
+        ],
+        "summary": "Create Embeddings",
+        "description": "Create embeddings using OpenAI-compatible API.\n\nThis endpoint provides an OpenAI-compatible interface for embeddings,\nrouting requests to appropriate embedding providers (OpenAI, Google, etc.).\n\nThe endpoint accepts all parameters from the OpenAI SDK's EmbeddingCreateParams\ntype, ensuring 100% compatibility with the official OpenAI API.\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    request: The FastAPI request object\n    body: The embedding request (matches OpenAI SDK types)\n    user: Authenticated user information (from TID JWT)\n    embeddings_service: The embeddings service instance\n\nReturns:\n    JSONResponse with OpenAI-compatible embedding response\n\nRaises:\n    HTTPException: If authentication fails or request is invalid",
+        "operationId": "create_embeddings_openai_v1_embeddings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful embedding generation",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/images/generations": {
+      "post": {
+        "tags": [
+          "OpenAI - Images"
+        ],
+        "summary": "Generate Images",
+        "description": "Generate images using OpenAI-compatible API.\n\nThis endpoint provides an OpenAI-compatible interface for image generation,\nrouting requests to Google Vertex AI models (Imagen, Gemini).\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    request: The FastAPI request object\n    body: The image generation request body (OpenAI format)\n    user: Authenticated user information (from TID JWT)\n    image_service: The image generation service instance\n\nReturns:\n    JSONResponse with OpenAI-compatible image generation response\n\nRaises:\n    HTTPException: If authentication fails or request is invalid",
+        "operationId": "generate_images_openai_v1_images_generations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageGenerationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful image generation",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/images/edits": {
+      "post": {
+        "tags": [
+          "OpenAI - Images"
+        ],
+        "summary": "Edit Images",
+        "description": "Edit images using OpenAI-compatible API.\n\nThis endpoint provides an OpenAI-compatible interface for image editing,\nrouting requests to Azure OpenAI GPT image models or Fal.ai FLUX edit models.\n\nFor Gemini image editing, use the chat completions endpoint with\nresponseModalities: [\"TEXT\", \"IMAGE\"] instead.\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    request: The FastAPI request object\n    body: The image edit request body (OpenAI format)\n    user: Authenticated user information (from TID JWT)\n    edit_service: The image edit service instance\n\nReturns:\n    JSONResponse with OpenAI-compatible image edit response\n\nRaises:\n    HTTPException: If authentication fails or request is invalid",
+        "operationId": "edit_images_openai_v1_images_edits_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful image edit",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/models": {
+      "get": {
+        "tags": [
+          "OpenAI - Models"
+        ],
+        "summary": "List Models",
+        "description": "List all available models.\n\nReturns a list of models available for use with the API,\nin OpenAI-compatible format.\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    user: Authenticated user information (from TID JWT)\n    models_service: The models service instance (injected)\n\nReturns:\n    OpenAIModelListResponse with list of available models\n\nRaises:\n    HTTPException: If authentication fails or service is unavailable",
+        "operationId": "list_models_openai_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "List of available models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIModelListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/anthropic/v1/messages": {
+      "post": {
+        "tags": [
+          "Anthropic - Messages"
+        ],
+        "summary": "Create Message",
+        "description": "Create a message using the native Anthropic Messages API.\n\nThis endpoint provides a zero-conversion passthrough to Anthropic-compatible\ncloud providers, preserving all native features including prompt caching,\nextended thinking, structured outputs, and tool use.\n\nAuthentication:\n- TID JWT token (required)\n\nArgs:\n    request: The FastAPI request object\n    body: The Anthropic Messages request body (native format)\n    user: Authenticated user information (from TID JWT)\n    messages_service: The Anthropic messages service instance\n\nReturns:\n    JSONResponse with Anthropic Messages response,\n    or StreamingResponse if stream=True",
+        "operationId": "create_message_anthropic_v1_messages_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessagesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Anthropic Messages response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/files": {
+      "get": {
+        "tags": [
+          "OpenAI - Files"
+        ],
+        "summary": "List files",
+        "description": "Returns paginated list of files owned by authenticated user. Supports FIQL filtering, pagination, and sorting.",
+        "operationId": "list_files_v1_files_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pageIndex",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Pageindex"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Pagesize"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "FIQL query",
+              "title": "Q"
+            },
+            "description": "FIQL query"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sort field with +/- prefix",
+              "title": "Sortby"
+            },
+            "description": "Sort field with +/- prefix"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by status",
+              "title": "Status"
+            },
+            "description": "Filter by status"
+          },
+          {
+            "name": "fileRole",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filerole"
+            }
+          },
+          {
+            "name": "includeFailed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include failed attempts (4xx errors) in results",
+              "default": false,
+              "title": "Includefailed"
+            },
+            "description": "Include failed attempts (4xx errors) in results"
+          },
+          {
+            "name": "includeProviderRequest",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include provider request body in response",
+              "default": false,
+              "title": "Includeproviderrequest"
+            },
+            "description": "Include provider request body in response"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_FileMetadataResponse_"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "OpenAI - Files"
+        ],
+        "summary": "Create file upload slot",
+        "description": "Creates a file record and returns URLs for upload and access. Upload your file directly to uploadUrl (PUT request with file content), then use the returned url in image editing requests.",
+        "operationId": "create_file_upload_v1_files_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileUploadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Upload slot created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUploadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}": {
+      "get": {
+        "tags": [
+          "OpenAI - Files"
+        ],
+        "summary": "Get file metadata",
+        "description": "Returns file metadata. Only the file owner can access this endpoint. Use ?includeContentUrl=true to get a 1-hour validity content URL.",
+        "operationId": "get_file_metadata_v1_files__file_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          },
+          {
+            "name": "includeContentUrl",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include the canonical content URL in response (requires TID JWT to access)",
+              "default": false,
+              "title": "Includecontenturl"
+            },
+            "description": "Include the canonical content URL in response (requires TID JWT to access)"
+          },
+          {
+            "name": "includeProviderRequest",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include provider request body in response",
+              "default": false,
+              "title": "Includeproviderrequest"
+            },
+            "description": "Include provider request body in response"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileMetadataResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Access denied (not owner)"
+          },
+          "404": {
+            "description": "File not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}/content": {
+      "get": {
+        "tags": [
+          "OpenAI - Files"
+        ],
+        "summary": "Get file content",
+        "description": "Access file content via dual authentication. Supports two modes:\n- **New (JWT)**: No query params. Requires `Authorization: Bearer <TID-JWT>`. JWT `sub` must match the file owner's `trimble_id`.\n- **Legacy (HMAC)**: Provide `exp` and `sig` query params. No JWT needed. Backward-compatible with old signed URLs.\n\nRedirects (302) to a fresh Azure SAS URL.",
+        "operationId": "get_file_content_v1_files__file_id__content_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          },
+          {
+            "name": "exp",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "(Legacy) Expiry timestamp (Unix epoch seconds)",
+              "title": "Exp"
+            },
+            "description": "(Legacy) Expiry timestamp (Unix epoch seconds)"
+          },
+          {
+            "name": "sig",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 32,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "(Legacy) HMAC-SHA256 signature (32 hex chars)",
+              "title": "Sig"
+            },
+            "description": "(Legacy) HMAC-SHA256 signature (32 hex chars)"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Azure SAS URL"
+          },
+          "307": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "Incomplete legacy params (only one of exp/sig)"
+          },
+          "401": {
+            "description": "JWT required but missing or invalid"
+          },
+          "403": {
+            "description": "Invalid signature or ownership mismatch"
+          },
+          "404": {
+            "description": "File not found or not yet uploaded"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          },
+          "502": {
+            "description": "Storage backend error"
+          },
+          "503": {
+            "description": "Service unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnthropicMessagesRequest": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model identifier (e.g., claude-sonnet-4-20250514)"
+          },
+          "messages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Messages",
+            "description": "Conversation messages in Anthropic format"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "title": "Max Tokens",
+            "description": "Maximum tokens to generate"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream",
+            "description": "Whether to stream the response via SSE"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System",
+            "description": "System prompt (string or content blocks with cache_control)"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature",
+            "description": "Sampling temperature"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top P",
+            "description": "Nucleus sampling parameter"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K",
+            "description": "Top-K sampling parameter"
+          },
+          "stop_sequences": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Sequences",
+            "description": "Custom stop sequences"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools",
+            "description": "Tools the model may use"
+          },
+          "tool_choice": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Choice",
+            "description": "How the model should use tools"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Request metadata (user_id, etc.)"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "model",
+          "messages",
+          "max_tokens"
+        ],
+        "title": "AnthropicMessagesRequest",
+        "description": "Native Anthropic Messages API request.\n\nRequired fields match the Anthropic Messages API specification:\n- model: The model identifier\n- messages: Conversation messages\n- max_tokens: Maximum tokens to generate\n\nAll other Anthropic parameters (thinking, system, tools, metadata, etc.)\nare accepted via extra=\"allow\" for full passthrough without SDK lag.\n\nSee: https://docs.anthropic.com/en/api/messages"
+      },
+      "ChatCompletionRequest": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "ID of the model to use"
+          },
+          "messages": {
+            "title": "Messages",
+            "description": "A list of messages comprising the conversation so far. Uses OpenAI SDK's ChatCompletionMessageParam type."
+          },
+          "audio": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio",
+            "description": "Audio parameters"
+          },
+          "frequency_penalty": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 2,
+                "minimum": -2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frequency Penalty",
+            "description": "Frequency penalty"
+          },
+          "function_call": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Function Call",
+            "description": "Deprecated: use tool_choice"
+          },
+          "functions": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Functions",
+            "description": "Deprecated: use tools"
+          },
+          "logit_bias": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logit Bias",
+            "description": "Modify likelihood of specified tokens"
+          },
+          "logprobs": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logprobs",
+            "description": "Whether to return log probabilities"
+          },
+          "max_completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Completion Tokens",
+            "description": "Maximum tokens in completion"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens",
+            "description": "Deprecated: use max_completion_tokens"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Developer-defined metadata"
+          },
+          "modalities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modalities",
+            "description": "Output modalities (e.g., text, audio)"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 128,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N",
+            "description": "Number of completions to generate"
+          },
+          "parallel_tool_calls": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallel Tool Calls",
+            "description": "Whether to enable parallel function calling"
+          },
+          "prediction": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prediction",
+            "description": "Predicted output content"
+          },
+          "presence_penalty": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 2,
+                "minimum": -2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Presence Penalty",
+            "description": "Presence penalty"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort",
+            "description": "Reasoning effort level (low, medium, high)"
+          },
+          "response_format": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format",
+            "description": "Response format specification"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Seed for deterministic sampling"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Tier",
+            "description": "Service tier (auto, default)"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop",
+            "description": "Stop sequences"
+          },
+          "store": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store",
+            "description": "Whether to store output"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream",
+            "description": "Whether to stream partial responses"
+          },
+          "stream_options": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Options",
+            "description": "Streaming configuration options"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 2,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature",
+            "description": "Sampling temperature"
+          },
+          "tool_choice": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Choice",
+            "description": "Controls which tool is called"
+          },
+          "tools": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools",
+            "description": "List of tools the model may call"
+          },
+          "top_logprobs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 20,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Logprobs",
+            "description": "Number of most likely tokens"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top P",
+            "description": "Nucleus sampling parameter"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "Unique identifier for the end-user"
+          },
+          "web_search": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Web Search",
+            "description": "Web search configuration"
+          },
+          "extra_body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Body",
+            "description": "Additional provider-specific parameters (e.g., Gemini safety_settings, Anthropic thinking)"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "model",
+          "messages"
+        ],
+        "title": "ChatCompletionRequest",
+        "description": "OpenAI-compatible chat completion request.\n\nMirrors openai.types.chat.completion_create_params.CompletionCreateParams\nto ensure 100% API compatibility while adding FastAPI/Pydantic benefits."
+      },
+      "EmbeddingRequest": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "ID of the model to use"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {}
+            ],
+            "title": "Input",
+            "description": "Input text to embed, encoded as a string or array of strings/tokens"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions",
+            "description": "The number of dimensions the resulting output embeddings should have"
+          },
+          "encoding_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Encoding Format",
+            "description": "The format to return the embeddings in (float or base64)"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "A unique identifier representing your end-user"
+          },
+          "extra_body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Body",
+            "description": "Additional provider-specific parameters"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "model",
+          "input"
+        ],
+        "title": "EmbeddingRequest",
+        "description": "OpenAI-compatible embeddings request.\n\nMirrors openai.types.embedding_create_params.EmbeddingCreateParams\nto ensure 100% API compatibility while adding FastAPI/Pydantic benefits."
+      },
+      "FileMetadataResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "File UUID"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "Original filename"
+          },
+          "contentType": {
+            "type": "string",
+            "title": "Contenttype",
+            "description": "MIME type"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose",
+            "description": "Purpose of the file"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes",
+            "description": "File size in bytes (set after upload)"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "File status for uploaded files: pending_upload, uploaded (None for generated files)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "When the file record was created"
+          },
+          "uploadedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploadedat",
+            "description": "When the file was uploaded (if known)"
+          },
+          "contentUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contenturl",
+            "description": "1-hour validity content URL (only when requested)"
+          },
+          "uploadExpiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploadexpiresat",
+            "description": "When the upload URL expires (for user-uploaded files only)"
+          },
+          "urlExpiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Urlexpiresat",
+            "description": "When the content URL expires (only when content_url is included)"
+          },
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid",
+            "description": "Model that generated or processed the file"
+          },
+          "fileRole": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filerole",
+            "description": "File role: input, output"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor",
+            "description": "Owner actor (user:uuid or app:uuid)"
+          },
+          "providerRequestBody": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Providerrequestbody",
+            "description": "Provider-specific request body sent to upstream AI service"
+          },
+          "errorStatusCode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errorstatuscode",
+            "description": "HTTP status code for failed attempts"
+          },
+          "errorMessage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errormessage",
+            "description": "Error message for failed attempts"
+          },
+          "errorType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errortype",
+            "description": "Error type"
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errorcode",
+            "description": "Error code"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage",
+            "description": "Token usage (OpenAI format)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "filename",
+          "contentType",
+          "purpose",
+          "createdAt"
+        ],
+        "title": "FileMetadataResponse",
+        "description": "Response for GET /v1/files/{id} - file metadata."
+      },
+      "FilePurpose": {
+        "type": "string",
+        "enum": [
+          "image-edit",
+          "image-generation"
+        ],
+        "title": "FilePurpose",
+        "description": "Purpose of a file (API format with hyphens).\n\nThis enum defines the external API format for file purposes.\nInternal operation_type uses underscores (e.g., \"image_edit\")."
+      },
+      "FileUploadRequest": {
+        "properties": {
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose",
+            "description": "Purpose of the file upload",
+            "default": "image-edit"
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "description": "Original filename with extension"
+          },
+          "contentType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contenttype",
+            "description": "MIME type (auto-detected from filename if not provided)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename"
+        ],
+        "title": "FileUploadRequest",
+        "description": "Request to create a file upload slot."
+      },
+      "FileUploadResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "File UUID"
+          },
+          "uploadUrl": {
+            "type": "string",
+            "title": "Uploadurl",
+            "description": "Pre-signed URL via model-files domain for direct upload"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Canonical content URL for image editing. Requires TID JWT Authorization header to access."
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "Original filename"
+          },
+          "contentType": {
+            "type": "string",
+            "title": "Contenttype",
+            "description": "MIME type"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose",
+            "description": "Purpose of the file"
+          },
+          "uploadExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Uploadexpiresat",
+            "description": "Upload URL expiry (30 min)"
+          },
+          "urlExpiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Urlexpiresat",
+            "description": "Content URL expiry (None for canonical JWT-auth URLs)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "When the file record was created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "uploadUrl",
+          "url",
+          "filename",
+          "contentType",
+          "purpose",
+          "uploadExpiresAt",
+          "createdAt"
+        ],
+        "title": "FileUploadResponse",
+        "description": "Response with upload URL and canonical content URL."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ImageEditRequest": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Image",
+            "description": "The image(s) to edit. Can be a URL, base64-encoded string, data URI, or an array of up to 10 images. For GPT models: png, webp, or jpg files less than 50MB each. For Fal.ai: publicly accessible URLs."
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 32000,
+            "title": "Prompt",
+            "description": "A text description of the desired edit(s)"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "The model to use for image editing",
+            "default": "gpt-image-1",
+            "examples": [
+              "gpt-image-1",
+              "gpt-image-1.5",
+              "flux-2-edit"
+            ]
+          },
+          "mask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask",
+            "description": "An additional image whose fully transparent areas indicate where the original image should be edited. Must be a valid PNG file with the same dimensions as the input image. Only supported by GPT models."
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N",
+            "description": "The number of images to generate (1-10, default varies by model)"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(\\d+x\\d+|auto|square_hd|square|portrait_4_3|portrait_16_9|landscape_4_3|landscape_16_9)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size",
+            "description": "The size of the generated images. Accepts two formats:\n- Dimension format (WxH): 1024x1024, 1536x1024, 1024x1536, etc.\n- Preset enum: auto, square_hd, square, portrait_4_3, etc.\n\nOpenAI/GPT models: dimension format (e.g., 1024x1024) or 'auto'.\nFal.ai models: preset enum (square_hd, portrait_4_3, landscape_16_9)."
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality",
+            "description": "Image quality. GPT models: low/medium/high/auto. Default varies by model."
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "url",
+                  "b64_json"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format",
+            "description": "The format in which the generated images are returned. Must be 'url' or 'b64_json'. URLs are valid for 60 minutes."
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "A unique identifier for the end-user"
+          },
+          "background": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background",
+            "description": "Background transparency: transparent, opaque, or auto. Only supported by GPT models. If transparent, output_format should be png or webp."
+          },
+          "input_fidelity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Fidelity",
+            "description": "Control how much effort to match input image style/features. Supports 'high' or 'low'. Only supported by gpt-image-1."
+          },
+          "output_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Format",
+            "description": "Output image format: png, jpeg, or webp (GPT models only)"
+          },
+          "output_compression": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Compression",
+            "description": "Compression level 0-100 for jpeg/webp output. Only supported by GPT models. Default is 100."
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Random seed for reproducibility"
+          },
+          "num_inference_steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Inference Steps",
+            "description": "Number of inference steps (Fal.ai only, default: 4)"
+          },
+          "enable_safety_checker": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Safety Checker",
+            "description": "Enable safety checker (Fal.ai only, default: true)"
+          },
+          "extra_body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Body",
+            "description": "Additional provider-specific parameters (e.g., Fal.ai guidance_scale, GPT moderation settings)"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "image",
+          "prompt"
+        ],
+        "title": "ImageEditRequest",
+        "description": "OpenAI-compatible image edit request.\n\nSupports multiple image editing models:\n- GPT image models (gpt-image-1, gpt-image-1-mini, gpt-image-1.5)\n- Fal.ai models (FLUX.2 edit models)\n\nThe unified contract follows OpenAI's /v1/images/edits API specification,\nwith provider-specific parameters available via extra_body.\n\nNote: For Gemini image editing, use the chat completions endpoint\nwith responseModalities: [\"TEXT\", \"IMAGE\"] instead."
+      },
+      "ImageGenerationRequest": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "The model to use for image generation",
+            "examples": [
+              "gpt-image-1-mini",
+              "FLUX-1.1-pro",
+              "imagen-3.0-generate-001",
+              "dall-e-3"
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 32000,
+            "title": "Prompt",
+            "description": "A text description of the desired image(s)"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N",
+            "description": "The number of images to generate (1-10, default varies by model)"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+x\\d+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size",
+            "description": "The size of the generated images (default varies by model)"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality",
+            "description": "Image quality. GPT models: low/medium/high/auto. DALL-E 3: standard/hd. Imagen: standard/hd. FLUX: standard/hd. Default varies by model."
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "url"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format",
+            "description": "Format of images: only 'url' is supported (presigned URL)"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Style",
+            "description": "Image style: natural or vivid (DALL-E 3 only)"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "A unique identifier for the end-user"
+          },
+          "output_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Format",
+            "description": "Output image format: png or jpeg (GPT models only)"
+          },
+          "output_compression": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Compression",
+            "description": "Compression level 0-100 for JPEG output (GPT models only)"
+          },
+          "background": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background",
+            "description": "Background type: transparent, opaque, or auto (GPT models only)"
+          },
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio",
+            "description": "Aspect ratio: 1:1, 3:4, 4:3, 9:16, 16:9 (Imagen only)"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt",
+            "description": "What to avoid in generated images (Imagen 3.0, FLUX.2-pro)"
+          },
+          "enhance_prompt": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enhance Prompt",
+            "description": "Use LLM-based prompt enhancement (Imagen 4.0 only)"
+          },
+          "sample_image_size": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Image Size",
+            "description": "Output resolution: 1K or 2K (Imagen 4.0 only)"
+          },
+          "person_generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person Generation",
+            "description": "Person generation control: dont_allow, allow_adult, allow_all (Imagen only)"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2147483647,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Random seed for reproducibility (Imagen, FLUX)"
+          },
+          "add_watermark": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Add Watermark",
+            "description": "Add SynthID watermark to images (Imagen only)"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language",
+            "description": "Prompt language: auto, en, zh, zh-TW, hi, ja, ko, pt, es (Imagen only)"
+          },
+          "safety_setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safety Setting",
+            "description": "Safety filter level: block_low_and_above, block_medium_and_above, block_only_high, block_none (Imagen only)"
+          },
+          "storage_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Uri",
+            "description": "Google Cloud Storage URI for output (Imagen only)"
+          },
+          "include_rai_reason": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Rai Reason",
+            "description": "Include RAI reason in response (Imagen only)"
+          },
+          "include_safety_attributes": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Safety Attributes",
+            "description": "Include safety attributes in response (Imagen only)"
+          },
+          "guidance_scale": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 20,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance Scale",
+            "description": "How closely to follow the prompt (FLUX models). Higher values = stricter adherence. Range: 1.0-20.0, default: 3.5"
+          },
+          "num_inference_steps": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Inference Steps",
+            "description": "Number of denoising steps (FLUX models). More steps = higher quality but slower. Range: 1-100, default: 28"
+          },
+          "scheduler": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduler",
+            "description": "Denoising scheduler algorithm (FLUX models). Options: 'auto', 'euler', 'dpm++'. Default: 'auto'"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2048,
+                "minimum": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width",
+            "description": "Custom image width in pixels (FLUX models). Must be multiple of 8. Range: 256-2048"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2048,
+                "minimum": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height",
+            "description": "Custom image height in pixels (FLUX models). Must be multiple of 8. Range: 256-2048"
+          },
+          "strength": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strength",
+            "description": "Image editing strength (FLUX.1-Kontext-pro, FLUX.2-pro editing mode). 0 = no change, 1 = complete regeneration. Default: 0.8"
+          },
+          "moderation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moderation",
+            "description": "Content moderation level: low, auto (GPT models only)"
+          },
+          "extra_body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Body",
+            "description": "Additional provider-specific parameters (e.g., Imagen safety_settings, Fal.ai guidance_scale)"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "title": "ImageGenerationRequest",
+        "description": "OpenAI-compatible image generation request.\n\nSupports multiple image generation models:\n- GPT image models (gpt-image-1, gpt-image-1-mini, gpt-image-1.5)\n- FLUX models (FLUX.1-Kontext-pro, FLUX-1.1-pro, FLUX.2-pro) via Azure AI Foundry\n- Vertex AI models (Imagen, Gemini)\n- Fal.ai models (flux-dev, Recraft, Stable Diffusion)\n\nNote: Defaults are intentionally None to allow each model provider\nto use its own defaults. This prevents sending unsupported parameter\nvalues to APIs that have different requirements."
+      },
+      "OpenAIModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The model identifier"
+          },
+          "object": {
+            "type": "string",
+            "title": "Object",
+            "description": "Object type, always 'model'",
+            "default": "model"
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created",
+            "description": "Unix timestamp when the model was created"
+          },
+          "owned_by": {
+            "type": "string",
+            "title": "Owned By",
+            "description": "The organization that owns the model",
+            "default": "Trimble"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "created"
+        ],
+        "title": "OpenAIModel",
+        "description": "OpenAI-compatible model object.\n\nMirrors the Model object from OpenAI's /v1/models endpoint."
+      },
+      "OpenAIModelListResponse": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "title": "Object",
+            "description": "Object type, always 'list'",
+            "default": "list"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIModel"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "List of available models"
+          }
+        },
+        "type": "object",
+        "title": "OpenAIModelListResponse",
+        "description": "OpenAI-compatible model list response.\n\nMirrors the response from OpenAI's GET /v1/models endpoint."
+      },
+      "PageLink": {
+        "properties": {
+          "href": {
+            "type": "string",
+            "title": "Href",
+            "description": "URL to the page. Contains encoded skipToken for cursor-based pagination.",
+            "examples": [
+              "https://api.example.com/v1/models?skipToken=eyJza2lwIjoxMDB9&pageSize=20"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "title": "PageLink",
+        "description": "Link to a page in paginated responses."
+      },
+      "PaginatedResponse_FileMetadataResponse_": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/FileMetadataResponse"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "Array of items in the current page."
+          },
+          "links": {
+            "$ref": "#/components/schemas/PaginationLinks",
+            "description": "Navigation links for pagination."
+          },
+          "moreItemsAvailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moreitemsavailable",
+            "description": "Indicates if more items are available beyond the current page. Used in certain APIs where links.next.href is always returned."
+          },
+          "totalCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalcount",
+            "description": "Total number of items across all pages (optional, may not always be provided)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "links"
+        ],
+        "title": "PaginatedResponse[FileMetadataResponse]"
+      },
+      "PaginationLinks": {
+        "properties": {
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the next page of results. Absent if no more results."
+          },
+          "prev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the previous page of results. Absent on first page."
+          },
+          "self": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the current page of results."
+          }
+        },
+        "type": "object",
+        "title": "PaginationLinks",
+        "description": "Links for navigating paginated responses."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

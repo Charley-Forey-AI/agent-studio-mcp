@@ -1,0 +1,1613 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agentic AI Platform - Ingestion Service API",
+    "description": "## Overview\n\nIngestion Service is designed to be used as part of Trimble Agentic AI Platform to ingest documents to the Knowledge Service.\nIt exposes a simple API to process documents and ingest them in to the Knowledge Service libraries.\n\n## Getting Started\n\n**PRIOR TO USING THIS API, YOU MUST AGREE TO OUR TERMS OF SERVICE**\n\nThe API is protected by OAuth2.0 and requires a valid TID access token in the `Authorization` header. Refer to [TID Authentication Guide](https://developer.trimble.com/docs/authentication) for details.\n\n### Required TID Token Scopes\n\nThe Knowledge Service API requires the following TID token scopes:\n\n- `openid` - Get user identity\n- `kb-ingest` - Your application must be subscribed to the Ingestion Service API product using [Trimble Cloud Console](https://console.trimble.com/)\n\n## Capabilities Overview\n\n- Ingest a file into a library via URL\n- Ingest a file into a library via upload\n- Monitoring the ingestion job status and error message if the job failed\n- List recent ingestion jobs\n- Get an ingestion by ID\n\n## Common API Concepts\n\nThis API uses HTTPS requests with JSON-formatted content in requests and responses.\n\n### Cross-Origin Resource Sharing\n\nThis API features Cross-Origin Resource Sharing (CORS) implemented in compliance with the\n[W3C spec](https://www.w3.org/TR/cors/) that allows cross-domain communication from the browser.\nAll responses have a wildcard same-origin which makes them completely public and accessible to everyone,\nincluding any code on any site.\n\n### Date Format\n\nAll dates in the API use UTC and are strings in the [ISO 8601 combined date and time representation\nformat](https://en.wikipedia.org/wiki/ISO_8601#Combined_date_and_time_representations)\nExample `2015-05-15T15:50:38.311Z`.\n\n### Eventual Read Consistency\n\nThe API responses are eventually consistent.\nWhen you read data from the service, the response might not reflect the results of the most recently completed\nwrite operation. The response might include some stale data due to caching\nin place. If you repeat your read request after a short time, the response should return the latest data.\n\n### Paginated Responses\n\nAll endpoints that return collection of resources follow the same schema for query parameters and\nresponse structure to paginate the results.\nPagination allows to limit the size of the large responses and aimed to improve the responsiveness and overall\nperformance when fetching large result sets. The overall latency is improved\nby parallelization of data processing and transfer.\n\nPagination is cursor-based and client-driven. The requests accept `skipToken` and `pageSize` query parameters.\n\nIf the `skipToken` query parameter is not specified, first page of the result set is returned.\n\nThe `pageSize` parameter informs the server on how many items client\nwants to receive in a single page at most. Server may return less number of items than requested if requested response payload is too large or if some of the items are not accessible to the requester.\nIf `pageSize` parameter is not specified then server return maximum possible number of items by default.\n\nThe maximum page size is different for each endpoint and specified as part of the endpoint description.\nIt may also vary depending on the request parameters (e.g. `fields` query parameter).\nIf the `pageSize` parameter is greater than specified limit endpoint can support server will return error to help client avoid bug in pagination implementation.\n\nThe `links.next.href` property in the response contains the URL to the next page of results. If there are no more results, the `links.next.href` property is not present in the response.\nServer may return response with `links.next.href` property even if the response contains no / lesser than requested(pageSize) items.\nServer may return less items than `pageSize` requested (or even zero). It could happen e.g. if resources requested are too large to fit into a single response\nor if some (or all `pageSize` requested) resources are not accessible to the requester. In this case requester is expected to call `links.next.href` to fetch the rest of the resources,if `links.next.href` is present in the response.\nIn extreme cases response could be empty with the `links.next.href` present, it means that all resources on the current page is not accessible to the requester.\n\n### Common Query Parameters\n\nIn addition to query parameters (`pageSize`, `skipToken`) used for paging responses there are several query\nparameters that are commonly used across all APIs.\n\n- the `sortBy` query parameter is used to specify the order of the items in the response. If not provided, the default order is applied (typically creation timestamp). The `sortBy` parameter is a string that can be one of the predefined values, e.g. `createdAt`, `-createdAt`. The `-` and `+` prefixes are used to specify the order direction (ascending or descending). Default order is ascending if no prefix is specified.\n\n- all identifiers are represented as strings, client should not make assumptions about the format of the identifiers, they are opaque to the client\n- all APIs return `x-request-id` header that contains a unique identifier for the request. This identifier can be used to track the request in the logs and for debugging purposes.\n\n## Data Model\n\nThe API is built around the `job` concept. A job runs asynchronously and represents a state machine that goes though a series of states.\nThe state status of the job can be monitored by polling the job descriptor by the job identifier.\nThe current job state is represent by the `status` property:\n\n- `UPLOADABLE` - waiting for the content to be uploaded\n- `QUEUED` - content is available, waiting for the parsing to start\n- `PARSING` - parsing of the content into the text is in progress\n- `PARSED` - parsing completed, waiting for the chunking to start\n- `CHUNKING` - chunking phase is in progress\n- `COMPLETED` - final job state in case of success\n- `FAILED` - final job state in case of any error\n\n## Data Retention\n\nAll information related to jobs is retained only for the duration of 7 days from the job creation and deleted after that.\n\n## Access Control Model\n\nOnly job creator has access to the job information.\n\n## Error Handling\n\n### Handling Errors and Retry Logic\n\nCommon HTTP Response Status Codes are used.\nThe response body for all error responses are in the same format and include the error code and message.\n\nWhen you send requests to and get responses from the Service API, you might encounter two types of API errors\n\n- **Client errors** - Client errors are indicated by a 4xx HTTP response code. Client errors indicate\nthat the service found a problem with the client request. This can include such things as an authentication\nfailure or missing required parameters. Fix the issue in the client application before submitting the request again.\n- **Server errors** - Server errors are indicated by a 5xx HTTP response code and need to be resolved by Trimble.\nYou may resubmit/retry the request until it succeeds.\n\nFor each API error, the API Gateway returns the following values\n\n- A status code, for example, `400`\n- An error type, for example, `tag:ValidationException`\n- An error message, for example, `Supplied AttributeValue is empty, must contain exactly one of the\nsupported data types`\n\n### Error Response Body Schema\n\nAll error responses follow the same structure for the response body and are conformant to [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) specification.\nThe error types use `tag:` URI schema and cannot be dereferenced.\n\n| Error type                                | HTTP Status Code | Error description |\n| ----------------------------------------- | --- | ------------------------------------------------- |\n| `tag:BadGateway`                          | 502 | Bad gateway error.|\n| `tag:ChunkError`                          | 500 | Generic chunking error.|\n| `tag:ChunkerContentValidationFailed`      | 400 | Document content validation failed during chunking.|\n| `tag:ChunkerInitializationFailed`         | 500 | Failed to initialize the document chunker.|\n| `tag:ChunkerSizeLimitExceeded`            | 400 | Document size exceeds the maximum limit for chunking.|\n| `tag:ChunkerStrategyNotSupported`         | 400 | The requested chunking strategy is not supported.|\n| `tag:Conflict`                            | 409 | The resource already exists.|\n| `tag:ConflictingHeaders`                  | 400 | Only one of If-Match or If-None-Match header is allowed in a request.|\n| `tag:DatabaseOperationFailed`             | 500 | Database operation failed.|\n| `tag:DocumentAnalysisFailed`              | 500 | Failed to analyze the document.|\n| `tag:DocumentChunkingFailed`              | 500 | Failed to chunk the document content.|\n| `tag:DocumentContentExtractionFailed`     | 500 | Failed to extract content from the document.|\n| `tag:DocumentDownloadFailed`              | 500 | Failed to download the document from storage.|\n| `tag:DocumentParsingFailed`               | 500 | Failed to parse the document content.|\n| `tag:DocumentUploadFailed`                | 500 | Failed to upload the document to storage.|\n| `tag:HttpError`                           | 500 | Generic HTTP error.|\n| `tag:InternalServerError`                 | 500 | The internal server error, please try again later.|\n| `tag:InvalidAcl`                          | 400 | The ACL cannot be empty on space level.|\n| `tag:InvalidIfMatchHeader`                | 400 | Invalid If-Match Header.|\n| `tag:InvalidName`                         | 400 | The resource name is invalid.|\n| `tag:InvalidPageSize`                     | 400 | The request contains invalid page size.|\n| `tag:InvalidParam`                        | 400 | Please provide a valid version.|\n| `tag:InvalidParentParam`                  | 400 | The parent param is invalid.|\n| `tag:InvalidPayload`                      | 400 | One of id or name is mandatory. In case of a new file upload name is mandatory.|\n| `tag:InvalidQueryParam`                   | 400 | Invalid query param: X.|\n| `tag:InvalidSkipToken`                    | 400 | The request contains invalid skip token.|\n| `tag:InvalidSortParameter`                | 400 | The given sort parameter is invalid.|\n| `tag:InvalidStateParam`                   | 400 | The state param is invalid.|\n| `tag:InvalidUpload`                       | 400 | The file status is not UPLOADABLE.|\n| `tag:InvalidUrl`                          | 404 | The url is not valid.|\n| `tag:InvalidVersion`                      | 412 | Specified version is not the latest version.|\n| `tag:KbChunkUploadFailed`                 | 500 | Failed to upload chunks to the knowledge base.|\n| `tag:KbDocumentCreationFailed`            | 500 | Failed to create document in the knowledge base.|\n| `tag:KbError`                             | 500 | Generic knowledge base error.|\n| `tag:KbGenerationCreationFailed`          | 500 | Failed to create generation in the knowledge base.|\n| `tag:KbGenerationPublishFailed`           | 500 | Failed to publish generation in the knowledge base.|\n| `tag:KbServiceAuthenticationFailed`       | 401 | Authentication failed with the knowledge base service.|\n| `tag:KbServiceConnectionFailed`           | 503 | Failed to connect to the knowledge base service.|\n| `tag:MethodNotAllowed`                    | 405 | Method is not allowed on this resource.|\n| `tag:NotAcceptableMediaType`              | 406 | The requested media type is not supported.|\n| `tag:PageSizeExceeded`                    | 400 | The pageSize parameter exceeds the maximum supported page size (N).|\n| `tag:ParseError`                          | 500 | Generic parsing error.|\n| `tag:ParserContentValidationFailed`       | 400 | Document content validation failed during parsing.|\n| `tag:ParserInitializationFailed`          | 500 | Failed to initialize the document parser.|\n| `tag:ParserStrategyNotSupported`          | 400 | The requested parsing strategy is not supported.|\n| `tag:PermissionDenied`                    | 403 | Permission denied for the requested resource.|\n| `tag:QueuePublishError`                   | 500 | Queue publish error, please try again later.|\n| `tag:ResourceNotFound`                    | 404 | The file or folder not found.|\n| `tag:ServiceUnavailable`                  | 503 | The service is currently unavailable.|\n| `tag:SourceUriMissing`                    | 400 | The source URI is missing from the request.|\n| `tag:StaleObject`                         | 400 | Cannot update as request contains stale data.|\n| `tag:TokenExchangeError`                  | 400 | Failed to change the TID token to communicate with downstream service.|\n| `tag:UnAuthorized`                        | 401 | The request is not authorized.|\n| `tag:UnsafeUrl`                           | 400 | The download URL is not safe to fetch.|\n| `tag:UnprocessableContent`                | 422 | The request is not valid.|\n\n### Error Status Codes (Client and Server Errors)\n\nHTTP status codes indicate whether an operation is successful or not.\nA response code of 2xx indicates that the operation was successful. Other error codes indicate either a\nclient error (4xx) or a server error (5xx).\nThe error table lists the errors returned by the service. Some errors are resolved if you retry the same request.\nAs a general rule, the timeout errors, network errors, throttling errors, and 5xx errors may be retried.\nThe 401 error code usually indicates expired credentials and should be retried after refreshing the access token.\nThe error table indicates which errors are likely to be resolved with successive retries.\n\nIf the value of the Retry column is\n\n- **Yes** - Submit the same request again.\n- **Yes if idempotent** - Submit the same request again, but only if the given method has been\nimplemented with idempotence.\n- **No** - Fix the problem on the client-side before submitting a new request.\n\nFor more information about retrying requests, see Error Retries and Exponential Backoff.\n\n| HTTP Status Code | Error type class                      | Retry                                             |\n| ---------------- | ------------------------------------- | ------------------------------------------------- |\n| 400              |  Bad Request Exception                | No                                                |\n| 401              |  Unauthorized Exception               | No, could be retried after acquiring a new token  |\n| 403              |  Access Denied Exception              | No                                                |\n| 404              |  Not Found Exception                  | No                                                |\n| 406              |  Not Acceptable Exception             | No                                                |\n| 409              |  Conflict Exception                   | No                                                |\n| 429              |  Too Many Requests Exception          | Yes                                               |\n| 500              |  Internal Service Failure Exception   | Yes                                               |\n| 502              |  Bad Gateway Exception                | Yes if idempotent                                 |\n| 503              |  Service Unavailable Exception        | Yes                                               |\n| 504              |  Endpoint Request Timed-out Exception | Yes if idempotent                                 |\n\n### Catching Errors\n\nFor your application to run smoothly, you need to build in logic to catch and respond to errors.\nOne typical approach is to implement your request within a try block or if-then statement.\nThe client-side SDKs typically perform retries and error checking out of the box.\n\nThe error code and description are always send in the request response body in addition to HTTP status code.\nTo troubleshoot the problem please capture the request identifier using the `x-request-id`, `X-Azure-Ref`, `x-amzn-RequestId` HTTP response headers. Inform the value received in these headers to support team.\n\n### Error Retries and Exponential Backoff\n\nNumerous components on a network, such as DNS servers, switches, load balancers,\nand others can generate errors anywhere in the life of a given request.\n\nThe usual technique for dealing with these error responses in a networked environment\nis to implement retries in the client application.\nThis technique increases the reliability of the application and reduces operational costs for the developer.\n\nIf you're not using the official SDKs, you should retry original requests that receive server errors (5xx).\nHowever, client errors (4xx, other than a TooManyRequestsException) indicate you need to\nrevise the request itself to correct the problem before trying again.\n\nIn addition to simple retries, it is recommended to use an exponential backoff algorithm for better flow control.\nThe idea behind exponential backoff is to use progressively longer waits between retries\nfor consecutive error responses.\nFor example, you might let one second elapse\nbefore the first retry, four seconds before the second retry, 16 seconds before the third retry, and so on.\nHowever, if the request has not succeeded after a minute, the problem might be a hard limit and not the\nrequest rate.\nFor example, you may have reached the maximum number of pipelines allowed. Set the maximum\nnumber of retries to stop around one minute.\n\n## Payload compression\n\nThe service accepts `gzip` and `br` compressed request payloads. The `Content-Encoding` header must be sent in the request\nto decode the request payload properly.\n\nThe service supports the following content encodings for responses:\n\n- `gzip`\n- `br`\n- `identity`\n\nOnly responses larger than 1KB might be encoded. Small responses are sent without encoding.\n\nThe encoding (compression) method can be negotiated with the `Accept-Encoding` header.\nThe following `Accept-Encoding` header formats, according to the [RFC 7231](<https://tools.ietf.org/html/>\nrfc7231#section-5.3.4) specification, are supported:\n\n- `Accept-Encoding:br,gzip`\n- `Accept-Encoding:` - If the Accept-Encoding header is present and empty, only the unencoded content is acceptable.\n- `Accept-Encoding:*` - This is the default value if the header is not present. This directive does not suggest that any algorithm is supported but indicates that no preference is expressed. Service will decide on the best compression method.\n- `Accept-Encoding:br;q=0.5,gzip=1.0`\n- `Accept-Encoding:gzip;q=1.0,identity;q=0.5,*;q=0`\nIf the header is not set, the default value is `*` as defined in RFC 7231. In such cases, the payload is compressed with best supported compression method.\n\n## Supported File Formats\n\nThe service supports a wide range of file formats, automatically selecting the appropriate parsing strategy based on the file type.\n\n### Complex Documents (using Document Intelligence)\n\nThese formats are parsed using Azure Document Intelligence for advanced layout and content extraction:\n\n| File Format | Extensions | MIME Types |\n|-------------|------------|------------|\n| PDF | `.pdf` | `application/pdf` |\n| Microsoft Word | `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |\n| Microsoft Excel | `.xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |\n| Microsoft PowerPoint | `.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` |\n\n### Text-Based Documents (using Plain Text Parser)\n\nThese formats are processed as plain text, preserving original formatting and structure:\n\n| Category | Extensions | Description |\n|----------|------------|-------------|\n| Text Files | `.txt`, `.log`, `.md`, `.markdown`, `.rst`, `.adoc`, `.asciidoc` | Plain text and markup documents |\n| Data Files | `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.yml`, `.sql` | Structured data formats |\n| Web Files | `.html`, `.htm`, `.css`, `.less`, `.sass`, `.scss` | Web markup and stylesheets |\n| Programming Languages | `.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.java`, `.c`, `.cpp`, `.cs`, `.go`, `.rb`, `.php`, `.swift`, `.kt`, `.rs`, `.scala`, `.lua`, `.r`, `.m` | Source code files |\n| Scripts | `.sh`, `.bash`, `.bat`, `.ps1`, `.fish`, `.zsh` | Shell and script files |\n| Configuration | `.ini`, `.conf`, `.cfg`, `.properties`, `.env`, `.lock`, `.manifest`, `.gitignore`, `.gitattributes`, `.dockerignore`, `.editorconfig`, `.htaccess`, `.htpasswd`, `.robots`, `.sitemap` | Configuration and settings files |\n| Other | `.tex`, `.bib`, `.vim`, `.emacs` | LaTeX, bibliography, and editor files |\n\n**Note:** The service automatically detects the file type based on both the file extension and MIME type to select the optimal parsing strategy.\n\n## Limits\n\nThe service has the following limits:\n\n- Maximum job duration: 1 hour\n",
+    "contact": {
+      "name": "Agentic AI Platform Team"
+    },
+    "license": {
+      "name": "Trimble Inc.",
+      "url": "https://www.trimble.com/"
+    },
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "https://ingest.stage.trimble-ai.com",
+      "description": "Ingestion Service"
+    }
+  ],
+  "paths": {
+    "/v1/jobs": {
+      "post": {
+        "tags": [
+          "Job Management"
+        ],
+        "summary": "Create Job",
+        "description": "Creates a new job. A document is always created in the Knowledge Base as part of job creation. If document creation fails, the job will not be created. If `downloadUrl` is provided, the job will be queued for processing immediately. Otherwise `uploadUrl` will be returned back and you are expected to upload the content to the provided URL.",
+        "operationId": "create_job_v1_jobs_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 400,
+                  "type": "tag:InvalidPayload",
+                  "title": "Invalid Payload",
+                  "detail": "One of id or name is mandatory. In case of a new file upload name is mandatory."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid authentication token",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 401,
+                  "type": "tag:UnAuthorized",
+                  "title": "Unauthorized",
+                  "detail": "The request is not authorized."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Action is not allowed for the user",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 403,
+                  "type": "tag:PermissionDenied",
+                  "title": "Permission Denied",
+                  "detail": "Permission denied for the requested resource."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error for the request body",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 422,
+                  "type": "tag:UnprocessableContent",
+                  "title": "Unprocessable Content",
+                  "detail": "The request is not valid."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Job Management"
+        ],
+        "summary": "List Jobs",
+        "description": "Lists all jobs the user has access to.",
+        "operationId": "list_jobs_v1_jobs_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/JobsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest jobs first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest jobs first)."
+          },
+          {
+            "name": "documentIds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by document IDs. If provided, only jobs with matching document IDs will be returned.",
+              "title": "Documentids"
+            },
+            "description": "Filter jobs by document IDs. If provided, only jobs with matching document IDs will be returned."
+          },
+          {
+            "name": "libraryIds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by library IDs. If provided, only jobs with matching library IDs will be returned.",
+              "title": "Libraryids"
+            },
+            "description": "Filter jobs by library IDs. If provided, only jobs with matching library IDs will be returned."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListJobsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 400,
+                  "type": "tag:InvalidPayload",
+                  "title": "Invalid Payload",
+                  "detail": "One of id or name is mandatory. In case of a new file upload name is mandatory."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid authentication token",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 401,
+                  "type": "tag:UnAuthorized",
+                  "title": "Unauthorized",
+                  "detail": "The request is not authorized."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Action is not allowed for the user",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 403,
+                  "type": "tag:PermissionDenied",
+                  "title": "Permission Denied",
+                  "detail": "Permission denied for the requested resource."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error for the request body",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 422,
+                  "type": "tag:UnprocessableContent",
+                  "title": "Unprocessable Content",
+                  "detail": "The request is not valid."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "Job Management"
+        ],
+        "summary": "Get job by identifier",
+        "description": "Retrieves the details of a specific job.",
+        "operationId": "get_job_by_id_v1_jobs__jobId__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "The ID of the job to retrieve.",
+              "title": "Jobid"
+            },
+            "description": "The ID of the job to retrieve."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 400,
+                  "type": "tag:InvalidPayload",
+                  "title": "Invalid Payload",
+                  "detail": "One of id or name is mandatory. In case of a new file upload name is mandatory."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid authentication token",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 401,
+                  "type": "tag:UnAuthorized",
+                  "title": "Unauthorized",
+                  "detail": "The request is not authorized."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Action is not allowed for the user",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 403,
+                  "type": "tag:PermissionDenied",
+                  "title": "Permission Denied",
+                  "detail": "Permission denied for the requested resource."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource is not found",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 404,
+                  "type": "tag:ResourceNotFound",
+                  "title": "Resource Not Found",
+                  "detail": "The resource not found."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error for the request body",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 422,
+                  "type": "tag:UnprocessableContent",
+                  "title": "Unprocessable Content",
+                  "detail": "The request is not valid."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/me": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Get Profile Info",
+        "description": "Get the information about the caller",
+        "operationId": "get_profile_info_v1_users_me_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserProfileFields"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fields to be included in the response. If not provided, minimal number of fields will be included as default.",
+              "explode": false,
+              "title": "Fields"
+            },
+            "description": "Fields to be included in the response. If not provided, minimal number of fields will be included as default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid authentication token",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Unique identifier for the request",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": 401,
+                  "type": "tag:UnAuthorized",
+                  "title": "Unauthorized",
+                  "detail": "The request is not authorized."
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TrimbleErrorPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChunkerOptions": {
+        "properties": {
+          "strategy": {
+            "$ref": "#/components/schemas/ChunkingStrategy",
+            "description": "The strategy to use for chunking.",
+            "default": "auto"
+          },
+          "codeLanguage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The programming language of the content. **Required** when `strategy` is `code` (unless using `auto` which can detect). If not provided and the `strategy` is `code` or `auto`, system will try to detect the language from the filename. If detection fails, `python` will be used as default. **Ignored** when `strategy` is `text`, `json`, or `openapi`."
+          },
+          "chunkSize": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 100,
+            "title": "Chunksize",
+            "description": "The maximum size of each chunk in tokens. Must be greater than `chunk_overlap`.",
+            "default": 1000
+          },
+          "chunkOverlap": {
+            "type": "integer",
+            "maximum": 5000,
+            "minimum": 0,
+            "title": "Chunkoverlap",
+            "description": "The overlap between consecutive chunks in tokens. Helps maintain context across chunk boundaries. Must be less than `chunk_size`.",
+            "default": 200
+          },
+          "separators": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Separators",
+            "description": "The separators to use for chunking the content.\n\n**Applicable strategies:** `auto`, `text`, `code`\n**Ignored strategies:** `json`, `openapi`\n\n**Text strategy defaults** (if not provided):\n  - `\\n\\n` (double newline)\n  - `\\n` (newline)\n  - ` ` (space)\n  - `\"\"` (empty string)\n  - `.` (period)\n\n**Code strategy:** Separators are automatically determined from `code_language`. Custom separators are **ignored**.\n\n**How it works:** Uses recursive character text splitter. Attempts to split on the first separator, then second, and so on, until the target `chunk_size` is reached.",
+            "examples": [
+              [
+                "\\n\\n",
+                "\\n",
+                " "
+              ],
+              [
+                ".",
+                "!",
+                "?",
+                "\\n"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ChunkerOptions",
+        "description": "Chunker options that defines how the content should be chunked."
+      },
+      "ChunkingStrategy": {
+        "type": "string",
+        "enum": [
+          "text",
+          "code",
+          "json",
+          "openapi",
+          "auto"
+        ],
+        "title": "ChunkingStrategy",
+        "description": "Defines the chunking algorithm used to split document content into chunks.\n\n- `text`: Uses recursive character text splitting with configurable separators.\n  Default separators (if not provided): `[\"\\n\\n\", \"\\n\", \" \", \"\", \".\"]`.\n  Respects `chunkSize` and `chunkOverlap` settings.\n\n- `code`: Uses language-aware splitting optimized for source code.\n  Separators are automatically determined from `codeLanguage`\n  (custom separators ignored).\n  If `codeLanguage` is not provided, attempts to detect from filename;\n  defaults to Python.\n  Respects `chunkSize` and `chunkOverlap` settings.\n\n- `json`: Uses recursive JSON splitting that preserves JSON structure.\n  The `separators` field is ignored. If individual JSON chunks exceed\n  10,000 characters, they are further split using the text chunker.\n  Note: `chunkOverlap` is not used for the JSON splitter\n  (only for text fallback).\n  Content must be valid JSON.\n\n- `openapi`: Specialized chunking for OpenAPI 2.0/3.0 specifications.\n  Creates one chunk per API path/operation and one chunk per component\n  schema. Output chunks are YAML-formatted. Examples are removed to\n  reduce size. Custom `separators`, `chunkSize`, and `chunkOverlap`\n  are largely ignored.\n  Content must be a valid OpenAPI specification (JSON or YAML).\n\n- `auto` (default): Automatically detects the optimal strategy based on:\n  1. Content-type header (e.g., `application/openapi+json` -> openapi,\n     `application/json` -> json)\n  2. File extension (e.g., `.py` -> code with Python, `.json` -> json)\n  3. Document category (code, data, markup, text, or complex)\n  For code files, the programming language is auto-detected from the\n  filename."
+      },
+      "CreateJobRequest": {
+        "properties": {
+          "kbUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2083,
+                "minLength": 1,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kburl",
+            "description": "The base URL of the Knowledge Base service to ingest document to. Must be a naked URL, i.e. without any path, query parameters or fragments.If not provided, the default KB service URL will be used."
+          },
+          "libraryId": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Libraryid",
+            "description": "The Knowledge Base Library ID. The content will be ingested to this library. Library must exist. You must have sufficient permissions to ingest the content to the library."
+          },
+          "documentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documentid",
+            "description": "The ID of the document to ingest. A document is always created in the Knowledge Base during job creation. If the document creation fails, the job will not be created. If provided and document does not exist, a new document will be created with the provided ID. If provided and document exists, a new generation will be created for the document. If not provided, a new document will be created with a random ID. "
+          },
+          "source": {
+            "$ref": "#/components/schemas/DocumentSourceAttributes",
+            "description": "Information about the document source. These attributes will be set on a document in the Knowledge base when document is ingested."
+          },
+          "downloadUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2083,
+                "minLength": 1,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloadurl",
+            "description": "The URL to download the document content.  Must be public URL or self-signed. If not provided, you are expected to upload the content to the uploadUrl returned in the response. "
+          },
+          "parserOptions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParserOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Comprehensive parsing options that abstract different parsing frameworks. If not provided, default parsing options will be used."
+          },
+          "chunkerOptions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChunkerOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Options for configuring the chunking process. If not provided, default chunking options will be used."
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "type": "array",
+                "maxItems": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": "Optional list of tags to associate with the document. If not provided for a new document, defaults to an empty list. If not provided for an existing document, the current tags are preserved."
+          }
+        },
+        "type": "object",
+        "required": [
+          "libraryId",
+          "source"
+        ],
+        "title": "CreateJobRequest",
+        "description": "Request model for creating a new job with comprehensive parsing options."
+      },
+      "DocumentSourceAttributes": {
+        "properties": {
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri",
+            "description": "The URI of the source document. If not provided, the download URL will be used.If download URL is also not provided, the source URI will be set to 'tag:unknown'."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "Time source document was created"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications):([a-z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The source document creator"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat",
+            "description": "Last time source document was changed"
+          },
+          "updatedBy": {
+            "type": "string",
+            "pattern": "^(users|applications):([a-z0-9-]+)$",
+            "title": "Updatedby",
+            "description": "The actor who changed the source document last time"
+          },
+          "contentType": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Contenttype",
+            "description": "The document type like 'application/vnd.google-apps.document', 'application/pdf', etc."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Title",
+            "description": "The document title or filename"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size",
+            "description": "The size of the source document in bytes. If not provided, it will be calculated after the document is uploaded."
+          }
+        },
+        "type": "object",
+        "required": [
+          "createdAt",
+          "createdBy",
+          "updatedAt",
+          "updatedBy",
+          "contentType",
+          "title"
+        ],
+        "title": "DocumentSourceAttributes",
+        "description": "Document source information."
+      },
+      "ErrorInfo": {
+        "properties": {
+          "status": {
+            "type": "integer",
+            "title": "Status"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ErrorType"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "retryInfo": {
+            "$ref": "#/components/schemas/RetryInfo",
+            "description": "Information about retry attempts, including current attempt,max attempts, and whether retryable"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "type",
+          "title",
+          "retryInfo"
+        ],
+        "title": "ErrorInfo",
+        "description": "Detailed error information for job processing failures."
+      },
+      "ErrorType": {
+        "type": "string",
+        "enum": [
+          "tag:ConflictingHeaders",
+          "tag:DatabaseOperationFailed",
+          "tag:InvalidAcl",
+          "tag:InvalidIfMatchHeader",
+          "tag:InvalidName",
+          "tag:InvalidPageSize",
+          "tag:InvalidParentParam",
+          "tag:InvalidPayload",
+          "tag:InvalidQueryParam",
+          "tag:InvalidSkipToken",
+          "tag:InvalidSortParameter",
+          "tag:InvalidStateParam",
+          "tag:InvalidUpload",
+          "tag:InvalidParam",
+          "tag:PageSizeExceeded",
+          "tag:StaleObject",
+          "tag:SourceUriMissing",
+          "tag:UnsafeUrl",
+          "tag:UnAuthorized",
+          "tag:TokenExchangeError",
+          "tag:PermissionDenied",
+          "tag:InvalidUrl",
+          "tag:ResourceNotFound",
+          "tag:MethodNotAllowed",
+          "tag:NotAcceptableMediaType",
+          "tag:Conflict",
+          "tag:InvalidVersion",
+          "tag:UnprocessableContent",
+          "tag:InternalServerError",
+          "tag:BadGateway",
+          "tag:QueuePublishError",
+          "tag:ServiceUnavailable",
+          "tag:DocumentParsingFailed",
+          "tag:DocumentChunkingFailed",
+          "tag:DocumentContentExtractionFailed",
+          "tag:DocumentAnalysisFailed",
+          "tag:DocumentUploadFailed",
+          "tag:DocumentDownloadFailed",
+          "tag:KbDocumentCreationFailed",
+          "tag:KbGenerationCreationFailed",
+          "tag:KbChunkUploadFailed",
+          "tag:KbGenerationPublishFailed",
+          "tag:KbServiceConnectionFailed",
+          "tag:KbServiceAuthenticationFailed",
+          "tag:ParserInitializationFailed",
+          "tag:ParserStrategyNotSupported",
+          "tag:ParserContentValidationFailed",
+          "tag:ChunkerInitializationFailed",
+          "tag:ChunkerStrategyNotSupported",
+          "tag:ChunkerContentValidationFailed",
+          "tag:ChunkerSizeLimitExceeded",
+          "tag:HttpError",
+          "tag:ParseError",
+          "tag:ChunkError",
+          "tag:KbError"
+        ],
+        "title": "ErrorType",
+        "description": "Error types for the API."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HrefResponse": {
+        "properties": {
+          "href": {
+            "type": "string",
+            "title": "Href",
+            "description": "A URL could be absolute of relative to the service base path."
+          }
+        },
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "title": "HrefResponse",
+        "description": "Response model for href."
+      },
+      "JobResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "The globally unique job identifier (random identifier assigned by the service on job creation)"
+          },
+          "kbUrl": {
+            "type": "string",
+            "maxLength": 2083,
+            "minLength": 1,
+            "format": "uri",
+            "title": "Kburl",
+            "description": "The base URL of the Knowledge Base service document is ingested to. This is a naked URL, i.e. without any path, query parameters or fragments."
+          },
+          "libraryId": {
+            "type": "string",
+            "title": "Libraryid",
+            "description": "The Knowledge Base Library ID. The content will be ingested to this library. You must have sufficient permissions to ingest the content to the library."
+          },
+          "documentId": {
+            "type": "string",
+            "title": "Documentid",
+            "description": "The ID of the document in the Knowledge Base. A document is always created during job creation, so this field is always present. The chunks will be uploaded as a new generation to this document."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "Time job was created"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications):([a-z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The job creator"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "Last time job descriptor was changed"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DocumentSourceAttributes",
+            "description": "Information about the document source. These attributes will be set on a document in the Knowledge base when document is ingested."
+          },
+          "downloadUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloadurl",
+            "description": "The URL to download the document content.  Must be public URL or self-signed. If not provided, you are expected to upload the content to the uploadUrl returned in the response."
+          },
+          "uploadUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploadurl",
+            "description": "Pre-signed URL to upload contents of the file"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "description": "Current status of the job"
+          },
+          "parserOptions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ParserOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Comprehensive parsing options that abstract different parsing frameworks. If not provided, default parsing options will be used."
+          },
+          "chunkerOptions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChunkerOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Options for configuring the chunking process. If not provided, default chunking options will be used."
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": "Tags for the document."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Detailed error information if the job failed. This field is populated only when the job status is FAILED."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kbUrl",
+          "libraryId",
+          "documentId",
+          "createdAt",
+          "createdBy",
+          "source",
+          "status"
+        ],
+        "title": "JobResponse",
+        "description": "Response model for job operations."
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "UPLOADABLE",
+          "QUEUED",
+          "PARSING",
+          "PARSED",
+          "CHUNKING",
+          "COMPLETED",
+          "FAILED"
+        ],
+        "title": "JobStatus",
+        "description": "Job status enum."
+      },
+      "JobsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt"
+        ],
+        "title": "JobsSortBy",
+        "description": "Sort options for job listings."
+      },
+      "Language": {
+        "type": "string",
+        "enum": [
+          "cpp",
+          "go",
+          "java",
+          "kotlin",
+          "js",
+          "ts",
+          "php",
+          "proto",
+          "python",
+          "r",
+          "rst",
+          "ruby",
+          "rust",
+          "scala",
+          "swift",
+          "markdown",
+          "latex",
+          "html",
+          "sol",
+          "csharp",
+          "cobol",
+          "c",
+          "lua",
+          "perl",
+          "haskell",
+          "elixir",
+          "powershell",
+          "visualbasic6"
+        ],
+        "title": "Language",
+        "description": "Enum of the programming languages."
+      },
+      "LinksResponse": {
+        "properties": {
+          "first": {
+            "$ref": "#/components/schemas/HrefResponse",
+            "description": "A URL that will retrieve the first page of results. Always present even if result set is empty."
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HrefResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A URL that will retrieve the last page of results. If there are no more pages, this is omitted."
+          }
+        },
+        "type": "object",
+        "required": [
+          "first"
+        ],
+        "title": "LinksResponse",
+        "description": "Response model for links.\n\nThe `links.next.href` property in the response contains the URL\nto the next page of results.\nIf there are no more results, the `links.next.href` property is not present\nin the response.\nServer may return response with `links.next.href` property even if the response\ncontains no / lesser than requested(pageSize) items."
+      },
+      "ListJobsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobResponse"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Items on this page."
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links."
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListJobsResponse",
+        "description": "Response model for listing jobs."
+      },
+      "ParserOptions": {
+        "properties": {
+          "strategy": {
+            "$ref": "#/components/schemas/ParsingStrategy",
+            "description": "The parsing strategy to use. The `auto` strategy will choose the parsing framework automatically based on the document type and content.",
+            "default": "auto"
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 10,
+            "title": "Language",
+            "description": "Language code for text recognition and analysis (e.g., 'en', 'fr', 'es').",
+            "default": "en"
+          },
+          "locale": {
+            "type": "string",
+            "maxLength": 10,
+            "title": "Locale",
+            "description": "Locale hint for text recognition and document analysis.",
+            "default": "en-US"
+          },
+          "modelId": {
+            "type": "string",
+            "title": "Modelid",
+            "description": "The Document Intelligence model ID to use for analysis.",
+            "default": "prebuilt-layout"
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/ParsingFeature"
+            },
+            "type": "array",
+            "title": "Features",
+            "description": "Optional analysis features to enable."
+          },
+          "useOcr": {
+            "type": "boolean",
+            "title": "Useocr",
+            "description": "Whether to use Optical Character Recognition (OCR) for text extraction.",
+            "default": true
+          },
+          "ocrConfidenceThreshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ocrconfidencethreshold",
+            "description": "Minimum confidence threshold for OCR results (0.0 to 1.0).",
+            "default": 0.8
+          },
+          "extractTables": {
+            "type": "boolean",
+            "title": "Extracttables",
+            "description": "Whether to extract tables from the document.",
+            "default": true
+          },
+          "extractImages": {
+            "type": "boolean",
+            "title": "Extractimages",
+            "description": "Whether to extract and process images from the document.",
+            "default": false
+          },
+          "extractMetadata": {
+            "type": "boolean",
+            "title": "Extractmetadata",
+            "description": "Whether to extract metadata from the document.",
+            "default": true
+          },
+          "extractKeyValuePairs": {
+            "type": "boolean",
+            "title": "Extractkeyvaluepairs",
+            "description": "Whether to extract key-value pairs from the document.",
+            "default": false
+          },
+          "extractEntities": {
+            "type": "boolean",
+            "title": "Extractentities",
+            "description": "Whether to extract named entities from the document.",
+            "default": false
+          },
+          "extractForms": {
+            "type": "boolean",
+            "title": "Extractforms",
+            "description": "Whether to extract form fields and their values.",
+            "default": false
+          },
+          "maxPages": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxpages",
+            "description": "Maximum number of pages to process."
+          },
+          "qualityMode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualitymode",
+            "description": "Quality mode for processing: 'fast', 'balanced', or 'high'.",
+            "default": "balanced"
+          },
+          "customSettings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customsettings",
+            "description": "Custom settings specific to the chosen parsing framework."
+          },
+          "includeConfidenceScores": {
+            "type": "boolean",
+            "title": "Includeconfidencescores",
+            "description": "Whether to include confidence scores in the response.",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ParserOptions",
+        "description": "Parser options that defines how the content should be parsed.\n\nAllows to select the parsing framework to use and configure the parsing options."
+      },
+      "ParsingFeature": {
+        "type": "string",
+        "enum": [
+          "tables",
+          "keyValuePairs",
+          "entities",
+          "forms",
+          "languages",
+          "styles",
+          "paragraphs",
+          "pages",
+          "lines",
+          "words",
+          "selectionMarks",
+          "documentStructure"
+        ],
+        "title": "ParsingFeature",
+        "description": "Parsing features."
+      },
+      "ParsingStrategy": {
+        "type": "string",
+        "enum": [
+          "documentIntelligence",
+          "auto",
+          "plainText"
+        ],
+        "title": "ParsingStrategy",
+        "description": "Parsing strategy that defines the framework to use for parsing."
+      },
+      "RetryInfo": {
+        "properties": {
+          "isRetryable": {
+            "type": "boolean",
+            "title": "Isretryable",
+            "description": "Whether the error is retryable"
+          },
+          "currentAttempt": {
+            "type": "integer",
+            "title": "Currentattempt",
+            "description": "The current attempt number"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "title": "Maxattempts",
+            "description": "The maximum number of attempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "isRetryable",
+          "currentAttempt",
+          "maxAttempts"
+        ],
+        "title": "RetryInfo",
+        "description": "Information about retry attempts."
+      },
+      "TrimbleErrorPayload": {
+        "properties": {
+          "status": {
+            "type": "integer",
+            "title": "Status"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ErrorType"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "type",
+          "title"
+        ],
+        "title": "TrimbleErrorPayload",
+        "description": "Trimble HTTP API Standard, Standard Error Payload.\n\n[Schema definition](https://api-standards.trimble-pnp.com/api-standard/http#standard-error-payload-schema)"
+      },
+      "UserProfileFields": {
+        "type": "string",
+        "enum": [
+          "jwt",
+          "claims"
+        ],
+        "title": "UserProfileFields",
+        "description": "Fields to be included as part of the user profile response."
+      },
+      "UserProfileResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+$",
+            "title": "Id",
+            "description": "Actor identifier in CURIE format."
+          },
+          "jwt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jwt"
+          },
+          "claims": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claims"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "UserProfileResponse",
+        "description": "Response model for user profile information."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "flows": {
+          "clientCredentials": {
+            "scopes": {
+              "kb-ingest": "Use ingestion service."
+            },
+            "tokenUrl": "https://stage.id.trimblecloud.com/oauth/token"
+          },
+          "authorizationCode": {
+            "scopes": {
+              "openid": "Get user identity.",
+              "kb-ingest": "Use ingestion service."
+            },
+            "authorizationUrl": "https://stage.id.trimblecloud.com/oauth/authorize",
+            "tokenUrl": "https://stage.id.trimblecloud.com/oauth/token"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Job Management",
+      "description": "Operations related to job lifecycle management including creation, listing, and monitoring of ingestion jobs."
+    },
+    {
+      "name": "Users",
+      "description": "Information about user."
+    }
+  ]
+}

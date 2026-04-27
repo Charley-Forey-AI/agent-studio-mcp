@@ -1,0 +1,27 @@
+# Copy to /etc/systemd/system/trimble-agentic-docs-mcp.service
+# Adjust paths, User, and Environment to match your server layout.
+#
+# Public URL http://YOUR_HOST/mcp/agent-studio requires TRIMBLE_AGENTIC_MCP_PATH
+# to match nginx location (see nginx-mcp-agent-studio.conf.example).
+
+[Unit]
+Description=Trimble Agentic docs MCP (Streamable HTTP)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/agent-studio-mcp/trimble-agentic-docs-mcp
+Environment=TRIMBLE_AGENTIC_API_DOCS_DIR=/opt/agent-studio-mcp/docs/api
+Environment=TRIMBLE_AGENTIC_URLS_FILE=/opt/agent-studio-mcp/docs/urls.txt
+Environment=TRIMBLE_AGENTIC_DEV_DOCS_CACHE_DIR=/opt/agent-studio-mcp/docs/cached/dev-portal
+Environment=TRIMBLE_AGENTIC_MCP_HOST=127.0.0.1
+Environment=TRIMBLE_AGENTIC_MCP_PORT=8305
+Environment=TRIMBLE_AGENTIC_MCP_PATH=/mcp/agent-studio
+ExecStart=/opt/agent-studio-mcp/.venv/bin/python -m trimble_agentic_docs_mcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+name: trimble-agentic-docs-mcp
+
+on:
+  push:
+    paths:
+      - "trimble-agentic-docs-mcp/**"
+      - ".github/workflows/trimble-agentic-docs-mcp.yml"
+  pull_request:
+    paths:
+      - "trimble-agentic-docs-mcp/**"
+      - ".github/workflows/trimble-agentic-docs-mcp.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trimble-agentic-docs-mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install and test
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+          python -m compileall -q trimble_agentic_docs_mcp

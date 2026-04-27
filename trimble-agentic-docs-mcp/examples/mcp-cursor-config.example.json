@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "trimble-agentic-docs": {
+      "url": "http://127.0.0.1:8305/mcp"
+    }
+  }
+}

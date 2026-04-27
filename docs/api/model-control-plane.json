@@ -1,0 +1,1587 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Model Control Plane API",
+    "description": "# Overview\n\nThis API provides endpoints for the Model Control Plane API in the Agentic AI Platform.\n\n## Getting Started\n\nPRIOR TO USING THIS API, YOU MUST AGREE TO OUR TERMS OF SERVICE\n\nThe API is protected by OAuth2.0 and requires a valid TID access token in the Authorization header. Refer to [TID Authentication Guide](https://developer.trimble.com/docs/authentication) for details. Please refer e.g. to [Trimble Connect Getting Started Guide](https://developer.trimble.com/docs/connect/getting_started) for the detailed steps needed to interact with the APIs.\n\n## Required TID Token Scopes\n\nThe Model Service API requires the following TID token scopes:\n* openid - Get user identity\n* models - Use model workflow execution endpoints\n* profile - Get user profile information\n\n## Capabilities Overview\n\n* Manage AI models\n    * Get model configurations\n    * Get model health\n    * Get model gateway connectivity\n* You can filter model list by model provider and model status\n* Advanced filtering using FIQL (Feed Item Query Language) for complex queries\n\n## Common API Concepts\n\nIn most cases, this API uses HTTPS requests with JSON-formatted content in requests and responses. The chat API uses SSE response streaming because of the asynchronous and long-running nature of this API.\n\n## Cross-Origin Resource Sharing\n\nThis API features Cross-Origin Resource Sharing (CORS) implemented in compliance with the [W3C spec](https://www.w3.org/TR/cors/) that allows cross-domain communication from the browser. All responses have a wildcard same-origin which makes them completely public and accessible to everyone, including any code on any site.\n\n## Date Format\n\nAll dates in the API use UTC and are strings in the [ISO 8601 combined date and time representation\\nformat](https://en.wikipedia.org/wiki/ISO_8601#Combined_date_and_time_representations). Example: 2015-05-15T15:50:38.311Z.\n\n## Eventual Read Consistency\n\nThe API responses are eventually consistent. When you read data from the service, the response might not reflect the results of the most recently completed write operation. The response might include some stale data due to caching in place. If you repeat your read request after a short time, the response should return the latest data.\n\n## Paginated Responses\n\nSome endpoints that return collection of resources follow the same schema for query parameters and response structure to paginate the results. Pagination allows to limit the size of the large responses and is aimed to improve the responsiveness and overall performance when fetching large result sets. The overall latency is improved by parallelization of data processing and transfer.\n\nPagination is cursor-based and client-driven. The requests accept pageIndex and pageSize query parameters.\n\nThe pageSize parameter informs the server on how many items the client wants to receive in a single page at most. Server may return fewer items than requested if the requested response payload is too large or if some of the items are not accessible to the requester. If pageSize parameter is not specified then the server returns the maximum possible number of items by default.\n\nThe maximum page size is different for each endpoint and specified as part of the endpoint description. It may also vary depending on the request parameters (e.g. fields query parameter). If the pageSize parameter is greater than the specified limit the endpoint can support, the server will return an error to help the client avoid bugs in pagination implementation.\nThe links.next.href property in the response contains the URL to the next page of results. If there are no more results, the links.next.href property is not present in the response. Server may return a response with links.next.href property even if the response contains no or fewer than requested (pageSize) items. Server may return fewer items than pageSize requested (or even zero). This could happen e.g. if resources requested are too large to fit into a single response or if some (or all pageSize requested) resources are not accessible to the requester. In this case, the requester is expected to call links.next.href to fetch the rest of the resources, if links.next.href is present in the response. In extreme cases, the response could be empty with the links.next.href present, which means that all resources on the current page are not accessible to the requester.\nThe links.next.href property is always returned (even if there are no more results available) in certain APIs like Changes API where clients might want to persist the links.next.href after all current changes are fetched and use it to fetch new changes later.\n\n## Common Query Parameters\n\nIn addition to query parameters (pageSize, skipToken) used for paging responses, there are several query parameters that are commonly used across all APIs.\n* deleted - This query parameter is used to work with resources marked as \"deleted\". The default APIs (except APIs that access specific versions) behavior is to respond with 404 error when a resource marked as deleted is requested (or don't return deleted resource as part of the listing/search API). If this parameter is specified then the deletion marker will be ignored and all resources are returned.\n* The fields query parameter is used to specify the fields to be included in the response. If not provided, a minimal number of fields will be included as default. The fields parameter is an array of field names, e.g. fields=name,description. The list of supported fields is defined for each resource type.\n* The sortBy query parameter is used to specify the order of the items in the response. If not provided, the default order is applied (typically creation timestamp). The sortBy parameter is a string that can be one of the predefined values, e.g. createdAt, -createdAt:desc. The - and + prefixes are used to specify the order direction (ascending or descending). Default order is ascending if no prefix is specified.\n* The search query parameter is used to filter the items in the response. If specified, only items that match the search criteria are returned. The search criteria is a substring that is matched against the specific fields of the resource.\n* All identifiers are represented as strings, client should not make assumptions about the format of the identifiers, they are opaque to the client.\n* All APIs return x-request-id header that contains a unique identifier for the request. This identifier can be used to track the request in the logs and for debugging purposes.\n\n## Advanced Filtering with FIQL\n\nThe Model Service API supports FIQL (Feed Item Query Language) for advanced filtering capabilities on model listings. FIQL provides a powerful and flexible way to construct complex queries using a simple, URL-friendly syntax.\n\n### FIQL Syntax\n\nFIQL uses the following operators:\n\n- **Comparison Operators:**\n  - `==` : Equal to\n  - `!=` : Not equal to\n  - `=lt=` or `<` : Less than\n  - `=le=` or `<=` : Less than or equal to\n  - `=gt=` or `>` : Greater than\n  - `=ge=` or `>=` : Greater than or equal to\n  - `=in=` : Value is in the specified list\n  - `=out=` : Value is not in the specified list\n\n- **Logical Operators:**\n  - `;` : AND operation\n  - `,` : OR operation\n  - `()` : Grouping for complex expressions\n\n### Field Mappings\n\nThe following API field names are mapped to database fields for FIQL queries:\n\n| API Field | Database Field | Description |\n|-----------|----------------|-------------|\n| `provider` | `modelProvider` | Model provider (e.g., openai, anthropic) |\n| `contextWindow` | `tokenLimits.contextWindow` | Maximum context window size |\n| `maxOutputTokens` | `tokenLimits.maxOutputTokens` | Maximum output tokens |\n| `inputModalities` | `modalities.input` | Supported input modalities |\n| `outputModalities` | `modalities.output` | Supported output modalities |\n| `auth` | `authenticationSupported` | Authentication support |\n\n### FIQL Query Examples\n\n**Basic Filtering:**\n```\nprovider==openai                    # OpenAI models only\ncontextWindow>100000                 # Models with large context windows\nauth==true                          # Models with authentication support\n```\n\n**Complex AND Queries:**\n```\nprovider==openai;contextWindow>100000              # OpenAI models with large context\nprovider==anthropic;maxOutputTokens>=4096          # Anthropic models with high output limits\n```\n\n**OR Queries:**\n```\nprovider==openai,provider==anthropic               # OpenAI OR Anthropic models\ncontextWindow=lt=50000,contextWindow=gt=200000      # Small OR very large context windows\n```\n\n**Array Queries:**\n```\ninputModalities=in=(text,image)                     # Models supporting text and/or image input\noutputModalities=out=(audio,video)                  # Models not supporting audio/video output\n```\n\n**Complex Grouped Queries:**\n```\n(provider==openai,provider==anthropic);contextWindow>50000\n# OpenAI OR Anthropic models with large context windows\n\nprovider==openai;(contextWindow>100000,maxOutputTokens>4000)\n# OpenAI models with either large context OR high output limits\n```\n\n### Using FIQL in API Requests\n\nAdd the `q` parameter to your model listing requests:\n\n```\nGET /v1/models?q=provider==openai;contextWindow>100000\nGET /v1/models?q=(provider==openai,provider==anthropic);auth==true\n```\n\n**Note:** When using FIQL queries (`q` parameter), individual filter parameters (`status`, `provider`) are ignored to avoid conflicts. Use FIQL syntax to specify all desired filters.\n\n## Data Model\n\n## Soft and Hard Delete, Data Retention\n\n## Access Control Model\n\n## Handling Errors and Retry Logic\n\nCommon HTTP Response Status Codes are used. The response body for all error responses are in the same format and include the error code and message.\n\nWhen you send requests to and get responses from the Service API, you might encounter two types of API errors:\n* Client errors - Client errors are indicated by a 4xx HTTP response code. Client errors indicate that the service found a problem with the client request. This can include such things as an authentication failure or missing required parameters. Fix the issue in the client application before submitting the request again.\n* Server errors - Server errors are indicated by a 5xx HTTP response code and need to be resolved by Trimble. You may resubmit/retry the request until it succeeds.\nFor each API error, the API Gateway returns the following values:\n* A status code, for example, 400\n* An error type, for example, tag:ValidationException\n* An error message, for example, Supplied AttributeValue is empty, must contain exactly one of the supported data types\n\n## Error Response Body Schema\n\nAll error responses follow the same structure for the response body and are conformant to [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) specification.\nThe error types use `tag:` URI schema and cannot be dereferenced.\n\n| Error type                                | HTTP Status Code | Error description |\n| ----------------------------------------- | --- | ------------------------------------------------- |\n| `tag:BadGateway`                          | 502 | The gateway received an invalid response from the upstream server.|\n| `tag:BadModelServiceConfig`               | 400 | Bad model service configuration.|\n| `tag:Conflict`                            | 409 | The request conflicts with the current state of the resource.|\n| `tag:ConflictingHeaders`                  | 400 | Only one of If-Match or If-None-Match header is allowed in a request.|\n| `tag:DatabaseOperationFailed`             | 500 | Database operation failed.|\n| `tag:HttpError`                           | 500 | An HTTP error occurred.|\n| `tag:InternalServerError`                 | 500 | The internal server error, please try again later.|\n| `tag:InvalidAcl`                          | 400 | The ACL cannot be empty on space level.|\n| `tag:InvalidIfMatchHeader`                | 400 | Invalid If-Match Header.|\n| `tag:InvalidModel`                        | 400 | The specified model is invalid or not supported.|\n| `tag:InvalidName`                         | 400 | The resource name is invalid.|\n| `tag:InvalidPageSize`                     | 400 | The request contains invalid page size.|\n| `tag:InvalidParentParam`                  | 400 | The parent param is invalid.|\n| `tag:InvalidPayload`                      | 400 | One of id or name is mandatory. In case of a new file upload name is mandatory.|\n| `tag:InvalidQueryParam`                   | 400 | Invalid query param: X.|\n| `tag:InvalidSkipToken`                    | 400 | The request contains invalid skip token.|\n| `tag:InvalidSortParameter`                | 400 | The given sort parameter is invalid.|\n| `tag:InvalidStateParam`                   | 400 | The state param is invalid.|\n| `tag:InvalidUpload`                       | 400 | The file status is not UPLOADABLE.|\n| `tag:InvalidUrl`                          | 404 | The url is not valid.|\n| `tag:InvalidVersion`                      | 412 | Specified version is not the latest version.|\n| `tag:InvalidParam`                        | 400 | Please provide a valid version.|\n| `tag:MethodNotAllowed`                    | 405 | Method is not allowed on this resource.|\n| `tag:NotAcceptableMediaType`              | 406 | The requested media type is not supported.|\n| `tag:PageSizeExceeded`                    | 400 | The pageSize parameter exceeds the maximum supported page size (N).|\n| `tag:PermissionDenied`                    | 403 | Permission denied for the requested resource.|\n| `tag:ResourceNotFound`                    | 404 | The file or folder not found.|\n| `tag:ServiceUnavailable`                  | 503 | The service is currently unavailable.|\n| `tag:StaleObject`                         | 400 | Cannot update as request contains stale data.|\n| `tag:TokenExchangeError`                  | 400 | Token exchange failed.|\n| `tag:UnAuthorized`                        | 401 | The request is not authorized.|\n| `tag:UnprocessableContent`                | 422 | The request contains invalid data.|\n\n## Error Status Codes (Client and Server Errors)\n\nHTTP status codes indicate whether an operation is successful or not.\nA response code of 2xx indicates that the operation was successful. Other error codes indicate either a\nclient error (4xx) or a server error (5xx).\nThe error table lists the errors returned by the service. Some errors are resolved if you retry the same request.\nAs a general rule, the timeout errors, network errors, throttling errors, and 5xx errors may be retried.\nThe 401 error code usually indicates expired credentials and should be retried after refreshing the access token.\nThe error table indicates which errors are likely to be resolved with successive retries.\n\nIf the value of the Retry column is:\n\n- **Yes** - Submit the same request again.\n- **Yes if idempotent** - Submit the same request again, but only if the given method has been\nimplemented with idempotence.\n- **No** - Fix the problem on the client-side before submitting a new request.\n\nFor more information about retrying requests, see Error Retries and Exponential Backoff.\n\n| HTTP Status Code | Error type class                      | Retry                                             |\n| ---------------- | ------------------------------------- | ------------------------------------------------- |\n| 400              |  Bad Request Exception                | No                                                |\n| 401              |  Unauthorized Exception               | No, could be retried after acquiring a new token  |\n| 403              |  Access Denied Exception              | No                                                |\n| 404              |  Not Found Exception                  | No                                                |\n| 406              |  Not Acceptable Exception             | No                                                |\n| 409              |  Conflict Exception                   | No                                                |\n| 429              |  Too Many Requests Exception          | Yes                                               |\n| 500              |  Internal Service Failure Exception   | Yes                                               |\n| 502              |  Bad Gateway Exception                | Yes if idempotent                                 |\n| 503              |  Service Unavailable Exception        | Yes                                               |\n| 504              |  Endpoint Request Timed-out Exception | Yes if idempotent                                 |\n\n## Catching Errors\n\nFor your application to run smoothly, you need to build in logic to catch and respond to errors.\nOne typical approach is to implement your request within a try block or if-then statement.\nThe client-side SDKs typically perform retries and error checking out of the box.\n\nThe error code and description are always sent in the request response body in addition to HTTP status code.\nTo troubleshoot the problem, please capture the request identifier using the `x-request-id`, `X-Azure-Ref`, `x-amzn-RequestId` HTTP response headers. Inform the value received in these headers to the support team.\n\n## Error Retries and Exponential Backoff\n\nNumerous components on a network, such as DNS servers, switches, load balancers,\nand others can generate errors anywhere in the life of a given request.\n\nThe usual technique for dealing with these error responses in a networked environment\nis to implement retries in the client application.\nThis technique increases the reliability of the application and reduces operational costs for the developer.\n\nYou should retry original requests that receive server errors (5xx).\nHowever, client errors (4xx, other than a TooManyRequestsException) indicate you need to\nrevise the request itself to correct the problem before trying again.\n\nIn addition to simple retries, it is recommended to use an exponential backoff algorithm for better flow control.\nThe idea behind exponential backoff is to use progressively longer waits between retries\nfor consecutive error responses.\nFor example, you might let one second elapse\nbefore the first retry, four seconds before the second retry, 16 seconds before the third retry, and so on.\nHowever, if the request has not succeeded after a minute, the problem might be a hard limit and not the\nrequest rate.\nFor example, you may have reached the maximum number of pipelines allowed. Set the maximum\nnumber of retries to stop around one minute.\n",
+    "contact": {
+      "name": "Agentic AI Platform Team",
+      "url": "https://github.com/Trimble-Agentic/agentic-model-svc",
+      "email": "agentic-ai-platform@trimble.com"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://www.trimble.com/legal/terms-of-use.cfm"
+    },
+    "version": "1.0.899"
+  },
+  "servers": [
+    {
+      "url": "https://models-api.stage.trimble-ai.com",
+      "description": "Model Service URls"
+    }
+  ],
+  "paths": {
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "Model Management"
+        ],
+        "summary": "List available models",
+        "description": "Lists available models with pagination support.",
+        "operationId": "list_models_v1_models_get",
+        "security": [
+          {
+            "OAuth2": [
+              "models"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pageIndex",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Page index (0-based, default: 0).",
+              "default": 0,
+              "title": "Pageindex"
+            },
+            "description": "Page index (0-based, default: 0)."
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Number of results per page (1-100, default: 20).",
+              "default": 20,
+              "title": "Pagesize"
+            },
+            "description": "Number of results per page (1-100, default: 20)."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ModelStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter models by their status.",
+              "title": "Status"
+            },
+            "description": "Filter models by their status."
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter models by provider.",
+              "title": "Provider"
+            },
+            "description": "Filter models by provider."
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated list of fields to include in response.",
+              "title": "Fields"
+            },
+            "description": "Comma-separated list of fields to include in response."
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Field to sort by. Use '-' prefix for descending (e.g., '-modelId').",
+              "title": "Sortby"
+            },
+            "description": "Field to sort by. Use '-' prefix for descending (e.g., '-modelId')."
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search term to filter models by name or description.",
+              "title": "Search"
+            },
+            "description": "Search term to filter models by name or description."
+          },
+          {
+            "name": "deleted",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include deleted models in response (default: false).",
+              "default": false,
+              "title": "Deleted"
+            },
+            "description": "Include deleted models in response (default: false)."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "FIQL (Feed Item Query Language) query for advanced filtering. Supports operators: ==, !=, <, <=, >, >=, =in=, =out=. Use ';' for AND, ',' for OR, '()' for grouping. Example: 'provider==openai;contextWindow>100000'",
+              "title": "Q"
+            },
+            "description": "FIQL (Feed Item Query Language) query for advanced filtering. Supports operators: ==, !=, <, <=, >, >=, =in=, =out=. Use ';' for AND, ',' for OR, '()' for grouping. Example: 'provider==openai;contextWindow>100000'"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_ModelDetailsResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/{modelId}": {
+      "get": {
+        "tags": [
+          "Model Management"
+        ],
+        "summary": "Get a model by its ID",
+        "description": "Retrieves detailed information about a specific AI model.",
+        "operationId": "get_model_v1_models__modelId__get",
+        "security": [
+          {
+            "OAuth2": [
+              "models"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier for the AI model (e.g., 'gpt-4o', 'claude-3-sonnet')",
+              "title": "Modelid"
+            },
+            "description": "Unique identifier for the AI model (e.g., 'gpt-4o', 'claude-3-sonnet')",
+            "example": "gpt-4o"
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated list of fields to include in response.",
+              "title": "Fields"
+            },
+            "description": "Comma-separated list of fields to include in response."
+          },
+          {
+            "name": "deleted",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Return model even if marked as deleted (default: false).",
+              "default": false,
+              "title": "Deleted"
+            },
+            "description": "Return model even if marked as deleted (default: false)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Model details not found for ID: gpt-4o"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/{modelId}/health": {
+      "get": {
+        "tags": [
+          "Model Management"
+        ],
+        "summary": "Check model health",
+        "description": "Performs an active health check on a model endpoint through the model gateway.",
+        "operationId": "check_model_health_v1_models__modelId__health_get",
+        "security": [
+          {
+            "OAuth2": [
+              "models"
+            ]
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "modelId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier for the AI model to check health for",
+              "title": "Modelid"
+            },
+            "description": "Unique identifier for the AI model to check health for",
+            "example": "gpt-4o"
+          },
+          {
+            "name": "x-debug",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include detailed request/response information in the health check",
+              "default": false,
+              "title": "X-Debug"
+            },
+            "description": "Include detailed request/response information in the health check"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelHealth"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Model details not found for ID: gpt-4o"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Model gateway unavailable",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Model gateway service is currently unavailable"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/gateway/connectivity": {
+      "get": {
+        "tags": [
+          "Model Management"
+        ],
+        "summary": "Check model gateway connectivity",
+        "description": "Checks basic connectivity to the model gateway.",
+        "operationId": "check_gateway_connectivity_v1_models_gateway_connectivity_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Check Gateway Connectivity V1 Models Gateway Connectivity Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2": [
+              "models"
+            ]
+          },
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuthenticationType": {
+        "type": "string",
+        "enum": [
+          "TID",
+          "API_KEY"
+        ],
+        "title": "AuthenticationType",
+        "description": "Supported authentication types."
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "description": "Standard error response model.",
+        "example": {
+          "detail": "Model not found"
+        }
+      },
+      "GatewayRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Gateway endpoint URL that was called",
+            "examples": [
+              "https://models.ai.trimble.com/openai/v1/chat/completions"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "description": "HTTP method used",
+            "examples": [
+              "POST"
+            ]
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers",
+            "description": "Request headers (excluding Authorization)",
+            "examples": [
+              {
+                "Content-Type": "application/json"
+              }
+            ]
+          },
+          "body": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Body",
+            "description": "Request body sent to the gateway",
+            "examples": [
+              {
+                "max_tokens": 10,
+                "messages": [
+                  {
+                    "content": "Hello! This is a health check.",
+                    "role": "user"
+                  }
+                ],
+                "model": "gpt-4o",
+                "temperature": 0.1
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "method",
+          "headers",
+          "body"
+        ],
+        "title": "GatewayRequest",
+        "description": "Gateway request details for health check."
+      },
+      "GatewayResponse": {
+        "properties": {
+          "statusCode": {
+            "type": "integer",
+            "title": "Statuscode",
+            "description": "HTTP status code returned by the gateway",
+            "examples": [
+              200
+            ]
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers",
+            "description": "Response headers from the gateway",
+            "examples": [
+              {
+                "content-type": "application/json"
+              }
+            ]
+          },
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Body",
+            "description": "Response body from the gateway (JSON object or error text)",
+            "examples": [
+              {
+                "choices": [
+                  {
+                    "message": {
+                      "content": "Hello! I'm GPT-4o."
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "statusCode",
+          "headers",
+          "body"
+        ],
+        "title": "GatewayResponse",
+        "description": "Gateway response details for health check."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "IOSchema": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/IOSchemaType",
+            "description": "Schema type for API compatibility"
+          },
+          "documentation_url": {
+            "type": "string",
+            "title": "Documentation Url",
+            "description": "URL to API documentation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "documentation_url"
+        ],
+        "title": "IOSchema",
+        "description": "I/O schema configuration."
+      },
+      "IOSchemaType": {
+        "type": "string",
+        "enum": [
+          "AzureAI-Compatible",
+          "OpenAI-Compatible",
+          "Anthropic-Compatible"
+        ],
+        "title": "IOSchemaType",
+        "description": "Supported I/O schema types."
+      },
+      "ImageConstraint": {
+        "properties": {
+          "maxItemsPerRequest": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxitemsperrequest",
+            "description": "Maximum number of items of this modality per request"
+          },
+          "maxSizeBytesPerItem": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxsizebytesperitem",
+            "description": "Maximum size in bytes per item"
+          },
+          "supportedFormats": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SupportedImageMimeType"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supportedformats",
+            "description": "Allowed image MIME types for model input"
+          }
+        },
+        "type": "object",
+        "title": "ImageConstraint",
+        "description": "Image-specific input constraints (extends base for future fields)."
+      },
+      "InferenceProvider": {
+        "type": "string",
+        "enum": [
+          "AzureAI",
+          "AzureOpenAI",
+          "AzureFoundry",
+          "FalAI",
+          "Google",
+          "VertexAI"
+        ],
+        "title": "InferenceProvider",
+        "description": "Supported inference providers."
+      },
+      "InputConstraints": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageConstraint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Constraints when image is accepted as model input"
+          },
+          "maxTotalSizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxtotalsizebytes",
+            "description": "Maximum total request payload size in bytes across all modalities"
+          }
+        },
+        "type": "object",
+        "title": "InputConstraints",
+        "description": "Optional per-modality input limits; extend with pdf/audio/video as needed."
+      },
+      "InputModality": {
+        "type": "string",
+        "enum": [
+          "text",
+          "image",
+          "audio",
+          "video"
+        ],
+        "title": "InputModality",
+        "description": "Allowed model input modality values (catalog / seed)."
+      },
+      "Modalities": {
+        "properties": {
+          "input": {
+            "items": {
+              "$ref": "#/components/schemas/InputModality"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Input",
+            "description": "Supported input modalities (e.g., text, image, audio)"
+          },
+          "output": {
+            "items": {
+              "$ref": "#/components/schemas/OutputModality"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Output",
+            "description": "Supported output modalities (e.g., text, embeddings)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "input",
+          "output"
+        ],
+        "title": "Modalities",
+        "description": "Input and output modalities configuration."
+      },
+      "ModelCost": {
+        "properties": {
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "Currency code for pricing (default: USD)",
+            "default": "USD"
+          },
+          "tokenPricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenBasedPricing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Token-based pricing for chat/completion models"
+          },
+          "requestPricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestBasedPricing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Request-based pricing for image/video/audio models"
+          }
+        },
+        "type": "object",
+        "title": "ModelCost",
+        "description": "Cost information for a model.\n\nSupports both token-based pricing (for chat/completion models)\nand request-based pricing (for image/video/audio generation models)."
+      },
+      "ModelDetails": {
+        "properties": {
+          "modelId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Modelid",
+            "description": "Model identifier"
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Displayname",
+            "description": "Human-readable name of the model"
+          },
+          "modelProvider": {
+            "$ref": "#/components/schemas/ModelProvider",
+            "description": "Model provider name"
+          },
+          "modelVersion": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Modelversion",
+            "description": "Model version"
+          },
+          "inferenceProvider": {
+            "items": {
+              "$ref": "#/components/schemas/InferenceProvider"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Inferenceprovider",
+            "description": "List of supported inference providers"
+          },
+          "tokenLimits": {
+            "$ref": "#/components/schemas/TokenLimits",
+            "description": "Token limits configuration"
+          },
+          "modalities": {
+            "$ref": "#/components/schemas/Modalities",
+            "description": "Input and output modalities"
+          },
+          "inputConstraints": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InputConstraints"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional limits for multimodal inputs (per modality)"
+          },
+          "authenticationSupported": {
+            "items": {
+              "$ref": "#/components/schemas/AuthenticationType"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Authenticationsupported",
+            "description": "Supported authentication types"
+          },
+          "ioSchema": {
+            "$ref": "#/components/schemas/IOSchema",
+            "description": "I/O schema configuration"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/ModelLifecycle",
+            "description": "Lifecycle information"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelCost"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cost/pricing information (token-based for chat/completion models)"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ModelStatus",
+            "description": "Derive API status from lifecycle.stage for backward compatibility.",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "modelId",
+          "displayName",
+          "modelProvider",
+          "modelVersion",
+          "inferenceProvider",
+          "tokenLimits",
+          "modalities",
+          "authenticationSupported",
+          "ioSchema",
+          "status"
+        ],
+        "title": "ModelDetails",
+        "description": "Model details configuration data structure."
+      },
+      "ModelDetailsResponse": {
+        "properties": {
+          "modelId": {
+            "type": "string",
+            "title": "Modelid",
+            "description": "Unique model identifier"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname",
+            "description": "Human-readable name of the model"
+          },
+          "modelProvider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelprovider",
+            "description": "Model provider"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Model status"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelLifecycle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lifecycle information"
+          },
+          "modelVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelversion",
+            "description": "Model version"
+          },
+          "inferenceProvider": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inferenceprovider",
+            "description": "Inference providers"
+          },
+          "tokenLimits": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenlimits",
+            "description": "Token limits"
+          },
+          "modalities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modalities",
+            "description": "Input/output modalities"
+          },
+          "inputConstraints": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputconstraints",
+            "description": "Per-modality input limits (e.g. image max count, size, formats)"
+          },
+          "authenticationSupported": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authenticationsupported",
+            "description": "Auth types"
+          },
+          "ioSchema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ioschema",
+            "description": "I/O schema"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted",
+            "description": "Deletion status"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat",
+            "description": "Creation timestamp"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "Update timestamp"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version",
+            "description": "Version number"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "modelId"
+        ],
+        "title": "ModelDetailsResponse",
+        "description": "Response model for model details that supports field selection.\n\nThis model follows the same pattern as AgentResponse in the agent service:\n- Core fields are required (always present)\n- Extended fields are optional (present based on field selection)\n- Uses response_model_exclude_none=True for partial responses"
+      },
+      "ModelHealth": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "unhealthy",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "checkedAt": {
+            "type": "string",
+            "title": "Checkedat",
+            "description": "ISO timestamp when the health check was performed",
+            "examples": [
+              "2025-01-15T10:30:00.000Z"
+            ]
+          },
+          "latencyMs": {
+            "type": "integer",
+            "title": "Latencyms",
+            "description": "Response latency in milliseconds",
+            "examples": [
+              150
+            ]
+          },
+          "errorMessage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errormessage",
+            "description": "Error message if the health check failed",
+            "examples": [
+              "Connection timeout"
+            ]
+          },
+          "gatewayRequest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GatewayRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Details of the request sent to the gateway"
+          },
+          "gatewayResponse": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GatewayResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Details of the response received from the gateway"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checkedAt",
+          "latencyMs"
+        ],
+        "title": "ModelHealth",
+        "description": "Operational status of a model endpoint."
+      },
+      "ModelLifecycle": {
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/ModelLifecycleStage",
+            "default": "ga"
+          },
+          "gaDate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gadate"
+          },
+          "deprecationDate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deprecationdate"
+          },
+          "retirementDate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirementdate"
+          },
+          "successorModelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successormodelid"
+          },
+          "minimumGaMonths": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimumgamonths",
+            "description": "Policy setting, only when in source"
+          }
+        },
+        "type": "object",
+        "title": "ModelLifecycle",
+        "description": "Lifecycle information for a model.\n\nSyncs with DB/seed data (model_details.json). Only includes fields present\nin source; minimumGaMonths is optional and omitted when not in DB."
+      },
+      "ModelLifecycleStage": {
+        "type": "string",
+        "enum": [
+          "preview",
+          "ga",
+          "deprecated",
+          "retired"
+        ],
+        "title": "ModelLifecycleStage",
+        "description": "Model lifecycle stages following Azure/Gemini patterns."
+      },
+      "ModelProvider": {
+        "type": "string",
+        "enum": [
+          "ai21_labs",
+          "anthropic",
+          "black_forest_labs",
+          "cohere",
+          "core42",
+          "deepseek",
+          "fal_ai",
+          "google",
+          "meta",
+          "microsoft",
+          "mistral_ai",
+          "openai",
+          "xai"
+        ],
+        "title": "ModelProvider",
+        "description": "Supported model providers."
+      },
+      "ModelStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "inactive",
+          "deprecated"
+        ],
+        "title": "ModelStatus",
+        "description": "Model status values."
+      },
+      "OutputModality": {
+        "type": "string",
+        "enum": [
+          "text",
+          "image",
+          "audio",
+          "video",
+          "embeddings"
+        ],
+        "title": "OutputModality",
+        "description": "Allowed model output modality values (catalog / seed)."
+      },
+      "PageLink": {
+        "properties": {
+          "href": {
+            "type": "string",
+            "title": "Href",
+            "description": "URL to the page. Contains encoded skipToken for cursor-based pagination.",
+            "examples": [
+              "https://api.example.com/v1/models?skipToken=eyJza2lwIjoxMDB9&pageSize=20"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "title": "PageLink",
+        "description": "Link to a page in paginated responses."
+      },
+      "PaginatedResponse_ModelDetailsResponse_": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelDetailsResponse"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "Array of items in the current page."
+          },
+          "links": {
+            "$ref": "#/components/schemas/PaginationLinks",
+            "description": "Navigation links for pagination."
+          },
+          "moreItemsAvailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moreitemsavailable",
+            "description": "Indicates if more items are available beyond the current page. Used in certain APIs where links.next.href is always returned."
+          },
+          "totalCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalcount",
+            "description": "Total number of items across all pages (optional, may not always be provided)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "links"
+        ],
+        "title": "PaginatedResponse[ModelDetailsResponse]"
+      },
+      "PaginationLinks": {
+        "properties": {
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the next page of results. Absent if no more results."
+          },
+          "prev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the previous page of results. Absent on first page."
+          },
+          "self": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PageLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to the current page of results."
+          }
+        },
+        "type": "object",
+        "title": "PaginationLinks",
+        "description": "Links for navigating paginated responses."
+      },
+      "RequestBasedPricing": {
+        "properties": {
+          "pricePerImage": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priceperimage",
+            "description": "Price per image generated/edited in USD"
+          },
+          "pricingTiers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricingtiers",
+            "description": "Resolution/quality-based pricing tiers"
+          }
+        },
+        "type": "object",
+        "title": "RequestBasedPricing",
+        "description": "Request-based pricing for image generation models.\n\nPricing is expressed in USD per request/image.\nSupports both flat-rate and tiered pricing models.\nAll fields are optional to handle various pricing structures."
+      },
+      "SupportedImageMimeType": {
+        "type": "string",
+        "enum": [
+          "image/jpeg",
+          "image/png",
+          "image/gif",
+          "image/webp",
+          "image/heic",
+          "image/heif"
+        ],
+        "title": "SupportedImageMimeType",
+        "description": "Allowed image MIME types for ``inputConstraints.image.supportedFormats``."
+      },
+      "TokenBasedPricing": {
+        "properties": {
+          "price1mInputTokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price1Minputtokens",
+            "description": "Price per 1 million input tokens in USD"
+          },
+          "price1mOutputTokens": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price1Moutputtokens",
+            "description": "Price per 1 million output tokens in USD"
+          }
+        },
+        "type": "object",
+        "title": "TokenBasedPricing",
+        "description": "Token-based pricing for chat/completion models.\n\nPricing is expressed in USD per 1 million tokens.\nAll fields are optional to handle cases where pricing is not available."
+      },
+      "TokenLimits": {
+        "properties": {
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Contextwindow",
+            "description": "Maximum context window size in tokens"
+          },
+          "maxOutputTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Maxoutputtokens",
+            "description": "Maximum output tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "contextWindow",
+          "maxOutputTokens"
+        ],
+        "title": "TokenLimits",
+        "description": "Token limits configuration."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "description": "OAuth2 with PKCE (no client secret required). Default client_id: local-dev-client",
+        "flows": {
+          "clientCredentials": {
+            "scopes": {
+              "models": "Access to the model service."
+            },
+            "tokenUrl": "http://stage.id.trimblecloud.com/oauth/token"
+          },
+          "authorizationCode": {
+            "scopes": {
+              "openid": "Get user identity.",
+              "profile": "Get user profile information.",
+              "models": "Access to the model service."
+            },
+            "authorizationUrl": "http://stage.id.trimblecloud.com/oauth/authorize",
+            "tokenUrl": "http://stage.id.trimblecloud.com/oauth/token"
+          }
+        }
+      },
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Health Checks",
+      "description": "Service health and readiness endpoints for monitoring and load balancing."
+    },
+    {
+      "name": "Model Management",
+      "description": "Operations for managing AI models, including listing, retrieving details, and health checks."
+    }
+  ]
+}

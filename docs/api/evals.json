@@ -1,0 +1,5149 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agentic Platform - Eval Service",
+    "description": "## Overview\n\nThe Eval Service provides a robust, scalable, and flexible evaluation platform for testing and measuring the performance of AI agents and retrieval systems. It implements a decoupled, API-first architecture with an orchestration layer (API service for managing definitions and runs) and an execution layer (asynchronous worker engine for executing evaluations).\n\nThis design separates lightweight, synchronous tasks (like creating a dataset) from heavyweight, asynchronous tasks (like running 500 test cases), ensuring the platform remains responsive and scalable.\n\n## Getting Started\n\n**PRIOR TO USING THIS API, YOU MUST AGREE TO OUR TERMS OF SERVICE**\n\nThe API is protected by OAuth2.0 and requires a valid TID access token in the `Authorization` header. Refer to [TID Authentication Guide](https://developer.trimble.com/docs/authentication) for details.\n\n## Capabilities Overview\n\n* **Dataset Management**\n  * Organize test cases (data set records) into datasets\n  * Link datasets to KB Service libraries for access control and inheritance\n  * Support both agent testing (messages) and retrieval testing (query) records\n  * Flexible metadata for categorization, filtering, and tracing\n\n* **data set Records**\n  * Unified test case model supporting multiple evaluation types:\n    * **Agent records**: Multi-turn conversations with `messages` array\n    * **Retrieval records**: Simple search queries with `query` string\n  * **Multi-modal support**: Text, images, audio, video in messages and outputs\n  * Define expected values: outputs, context chunks (with relevance), tool calls\n  * Capture actual values: outputs and tools from reference runs for regression testing\n  * Reference outputs: Store \"blessed\" outputs for baseline comparison\n\n* **Evaluator Management (Agent-Like Entities)**\n  * **System Evaluators**: Trimble-managed templates (read-only, must clone to use)\n    * Pre-optimized for common metrics (faithfulness, recall, safety, relevance)\n    * Clone via `POST /evaluators/{template_id}/clone` to create user-owned instances\n  * **User Evaluators**: Custom LLM-as-a-Judge evaluators or cloned instances\n    * Full CRUD operations (create, update, delete)\n    * Customizable prompts, metrics, and configurations\n  * **Access Control**: Same permission model as agents.yaml\n    * `admins`: Manage evaluator config and permissions\n    * `users`: Create and view jobs with evaluator\n    * Actor claims: users:, accounts:, applications:\n  * **Agent Permissions**: Define which agents evaluator can invoke for testing\n  * **Execution Configuration**: Model selection, timeout, retry logic\n  * **Multi-modal evaluation**: Assess image quality, audio clarity, video analysis, TTS\n  * Multi-metric output from single evaluator execution\n  * Support for boolean, numerical, and categorical metrics\n\n* **Evaluation Jobs**\n  * Asynchronous execution of evaluators against datasets\n  * Top-level resource: `/jobs` with `evaluator_id` in payload\n  * Easy filtering: by evaluator, dataset, agent, status, or type\n  * **Job Queuing**: FIFO queue ensures sequential execution per agent/evaluator/dataset combination\n  * **Job Statuses**: `QUEUED` → `PENDING` → `RUNNING` → `COMPLETED`/`FAILED`/`CANCELLED`\n  * **Job Cancellation**: Cancel queued jobs via `POST /jobs/{job_id}/cancel` (admins only)\n  * **Agent Eval**: End-to-end testing of complete agent behavior with full context\n  * **Retriever Eval**: Component-level testing of KB search quality in isolation\n  * **Multi-modal testing**: Vision models, audio models, image generation, TTS, video\n  * Programmatic success criteria with pass/fail outcomes\n  * Progress tracking (total, completed, failed records)\n  * Creates individual `RecordEvaluation` entries per record with `job_id` link\n  * Aggregated summary results and detailed per-record results\n\n* **Individual Record Evaluations**\n  * Unified storage for both LLM and human evaluations per record\n  * Endpoint: `/datasets/{dataset_id}/records/{record_id}/evaluations`\n  * Filter by source type, evaluator, or specific human actor\n  * **Inter-rater reliability analysis**: Compare human vs LLM scores across same records\n    * Calculate agreement metrics (MAE, correlation, Cohen's Kappa)\n    * Identify high-disagreement records for review\n    * Validate LLM evaluator quality against human judgment\n  * Link evaluations back to jobs via `job_id`\n  * Support for evaluation comments and metadata\n  * Delete/update human evaluations (LLM evaluations immutable)\n\n## Common API Concepts\n\nThis API uses HTTPS requests with JSON-formatted content in requests and responses.\n\n### Cross-Origin Resource Sharing\n\nThis API features Cross-Origin Resource Sharing (CORS) implemented in compliance with the\n[W3C spec](https://www.w3.org/TR/cors/) that allows cross-domain communication from the browser.\n\n### Date Format\n\nAll dates in the API use UTC and are strings in the [ISO 8601 combined date and time representation\nformat](https://en.wikipedia.org/wiki/ISO_8601#Combined_date_and_time_representations)\nExample `2015-05-15T15:50:38.311Z`.\n\n### Paginated Responses\n\nEndpoints that return collections support pagination using cursor-based pagination.\nResponses include a `pagination` object with `next_cursor` (for fetching the next page) and `total` (total count of items).\n\nCommon query parameters:\n- `page` - Page number (default: 1)\n- `limit` - Number of items per page (default: 100)\n- `tag` - Filter by metadata tag\n\n## Access Control Model\n\nThe Eval Service uses a role-based access control model similar to agents.yaml:\n\n### Evaluator Permissions\n\nEvaluators have two roles defined using actor claims:\n- **Admin Role**: Can manage evaluator configuration, update rubrics, manage permissions, delete evaluator, and create jobs\n- **User Role**: Can create and view jobs with this evaluator\n\n**Actor Claims** use the same syntax as agents.yaml:\n- `users:123456789` - Specific user by TID\n- `accounts:qa-team` - All users in an account\n- `applications:eval-bot` - Specific application\n- `users:*` or `applications:*` - All authenticated users/applications\n- `accounts:trimble-placeholder-of-employees` - All Trimble employees\n\n### Dataset Permissions\n\nDatasets inherit permissions from KB Service:\n- **Dataset Creation/Update**: Users must have read access to all KB libraries listed in `kb_library_links`\n- **Record Management**: Requires access to dataset's linked KB libraries\n\n### Job Execution Permissions\n\nJob creation requires:\n- Evaluator must be user-owned (`is_system_managed: false`)\n- User must be in evaluator's `users` or `admins` list\n- User must have access to dataset's KB libraries\n- **External permissions** (managed in other services):\n  - For AGENT jobs: Evaluator's `created_by` actor must have access to target agent (in Agent Service)\n  - KB libraries must be shared with evaluator's `created_by` actor (in KB Service)\n\n### System Evaluators (Templates)\n\nSystem evaluators are read-only templates:\n- Managed by Trimble (`accounts:trimble-placeholder-of-employees`)\n- Cannot be modified or deleted by users\n- **Cannot be used directly for job creation**\n- Must be **cloned** via `POST /evaluators/{evaluator_id}/clone` to create a user-owned copy\n- Cloned evaluators inherit the rubric but allow custom permissions and configuration\n\n**Workflow:**\n1. Browse system evaluators: `GET /evaluators?is_system_managed=true`\n2. Find desired template by name (e.g., \"Faithfulness Evaluator\")\n3. Clone the template: `POST /evaluators/{template_id}/clone`\n4. **(External)** Grant evaluator access to agents in Agent Service and KB libraries in KB Service\n5. Create jobs: `POST /jobs` with the evaluator_id\n\n## Data Model\n\n### Datasets\n\nA \"Dataset\" is a top-level collection that groups data set records for a specific evaluation purpose (e.g., \"Support Bot Regression Tests\"). Datasets link to KB Service libraries and inherit their permission model.\n\n### data set Records\n\nA \"data set Record\" is a unified test case within a dataset. It supports both agent evaluation and retrieval evaluation:\n\n**For CONVERSATION records (agent testing):**\n- **messages**: Array of user/assistant turns (conversation history)\n- **expected_output**: The ideal agent response (ground truth)\n- **expected_context**: (Optional) Expected KB chunks the agent should use\n- **expected_tools**: (Optional) Expected tool calls\n\n**For QUERY records (retrieval testing):**\n- **query**: Simple search query string\n- **expected_context**: Expected chunks that should be retrieved (with relevance levels)\n\n**Both types support:**\n- **Actual values**: Captured results from reference runs (actual_output, actual_tools)\n- **Reference output**: A \"blessed\" output for regression testing\n- **Flexible metadata**: For categorization, filtering, and tracing\n\n**Expected vs Actual vs Reference:**\n- `expected_*` - The ideal/correct behavior (ground truth for scoring)\n- `actual_*` - What a specific run actually produced (captured for comparison)\n- `reference_output` - A previously approved \"good\" output (for regression tests)\n\n**Note:** A record must have either `messages` OR `query`, determined by `record_type`:\n- `record_type: CONVERSATION` → requires `messages`\n- `record_type: QUERY` → requires `query`\n\n### Evaluators (Agent-Like Entities)\n\nEvaluators act as specialized agents that measure and judge other agents' performance. Each evaluator combines:\n\n1. **Rubric Definition**: Metrics and scoring criteria (what to measure)\n2. **Access Control**: Admins and users with actor claims (who can use the evaluator)\n3. **Execution Configuration**: Model, timeout, retry settings (how to execute)\n\n**Important - External Permissions Required:**\nFor evaluators to execute jobs, they need access to external resources:\n- **Agent Service**: Share target agents with evaluator's `created_by` actor (add to agent's `users` list)\n- **KB Service**: Share KB libraries with evaluator's `created_by` actor (grant library access)\n\nThese permissions are managed in the respective services, not in the Eval Service.\n\n**System vs User Evaluators:**\n- **System Evaluators**: Pre-defined, Trimble-managed evaluator templates (e.g., faithfulness, safety)\n  - Read-only, cannot be modified or used directly for jobs\n  - Must be **cloned** to create a user-owned instance\n  - Managed by `accounts:trimble-placeholder-of-employees`\n\n- **User Evaluators**: User-owned instances (created from scratch or cloned from system templates)\n  - Can be customized and used for job execution\n  - Creator becomes admin automatically\n\n### Evaluation Jobs\n\nAn \"Evaluation Job\" coordinates evaluation work (automated or manual) against a dataset:\n\n**Executor Types:**\n\n**AUTOMATED** - LLM evaluator runs automatically:\n- Creates via `POST /jobs` with `executor_type: AUTOMATED`\n- LLM evaluator executes against all records\n- Creates RecordEvaluation entries automatically\n- Status: QUEUED → PENDING → RUNNING → COMPLETED/FAILED/CANCELLED\n- Use for: Bulk evaluation, regression testing, CI/CD pipelines\n\n**MANUAL** - Human evaluators submit manually:\n- Creates via `POST /jobs` with `executor_type: MANUAL` and `assigned_evaluators`\n- Job acts as a container for human evaluation work\n- Humans submit evaluations with this job_id\n- Job tracks completion as evaluations are submitted\n- Status: PENDING → RUNNING (some submitted) → COMPLETED (all submitted)\n- Use for: Quality assurance, spot-checking, LLM validation\n\n## Async Execution Model\n\nEvaluation jobs execute asynchronously with a queue-based execution model:\n\n### Job Lifecycle\n\n1. **Create Job**: POST to `/jobs` returns 202 Accepted with initial job object\n2. **Queuing**: Job enters a FIFO queue based on its queue key (agent + evaluator + dataset combination)\n3. **Execution**: When the job reaches the front of the queue, it moves to PENDING and begins execution\n4. **Poll Status**: GET `/jobs/{job_id}` to check progress\n5. **Retrieve Results**:\n   - GET `/jobs/{job_id}/results` for summary with all record results\n   - GET `/results` for individual evaluations\n\n### Job Status Flow\n\n```\nQUEUED → PENDING → RUNNING → COMPLETED\n                          ↘ FAILED\n         ↓\n      CANCELLED (via POST /jobs/{job_id}/cancel)\n```\n\n- **QUEUED**: Job is waiting in the queue for its turn to execute\n- **PENDING**: Job is at the front of the queue and ready to be picked up by a worker\n- **RUNNING**: Job is actively being processed by the worker\n- **COMPLETED**: Job finished successfully\n- **FAILED**: Job failed during execution\n- **CANCELLED**: Job was cancelled while in QUEUED status (before execution started)\n\n### Queue Key\n\nJobs are grouped into queues based on a composite key:\n- **Agent ID** (for AGENT jobs)\n- **Evaluator ID**\n- **Dataset ID**\n\nOnly one job per queue key can be active (PENDING or RUNNING) at a time. This prevents resource contention and ensures predictable execution order. When a job completes, the next QUEUED job in the same queue automatically starts.\n\n### Execution Engine\n\nThe execution engine:\n- Processes records in batches from the dataset\n- Creates a `RecordEvaluation` entry for each record\n- Invokes the target agent (evaluator must have agent access granted in Agent Service)\n- Applies the evaluator's rubric to generate scores\n- Aggregates metrics against success criteria\n- Generates pass/fail outcome for the job\n\n**Connection**: Each job creates multiple `RecordEvaluation` entries, linked via `job_id`\n\n### Job Cancellation\n\nJobs that are waiting in the queue (status: `QUEUED`) can be cancelled:\n\n- **Endpoint**: `POST /jobs/{job_id}/cancel`\n- **Permission**: Only admins of the evaluator can cancel jobs\n- **Constraint**: Only jobs in `QUEUED` status can be cancelled\n- **Result**: Job status changes to `CANCELLED` and is removed from the queue\n\nJobs that have already started execution (`PENDING`, `RUNNING`) cannot be cancelled. This ensures that partially completed work is not abandoned.\n\n## Error Handling\n\n### Handling Errors and Retry Logic\n\nCommon HTTP Response Status Codes are used.\nThe response body for all error responses are in the same format and include the error code and message.\n\nWhen you send requests to and get responses from the Service API, you might encounter two types of API errors\n\n- **Client errors** - Client errors are indicated by a 4xx HTTP response code. Client errors indicate\nthat the service found a problem with the client request. This can include such things as an authentication\nfailure or missing required parameters. Fix the issue in the client application before submitting the request again.\n- **Server errors** - Server errors are indicated by a 5xx HTTP response code and need to be resolved by Trimble.\nYou may resubmit/retry the request until it succeeds.\n\nFor each API error, the API Gateway returns the following values\n\n- A status code, for example, `400`\n- An error type, for example, `VALIDATION_ERROR`\n- An error message, for example, `The request contains invalid parameters`\n\n### Error Response Body Schema\n\nAll error responses follow the same structure for the response body and are conformant to [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) specification.\n\n| Error type                    | HTTP Status Code | Error description |\n| ----------------------------- | ---------------- | ----------------- |\n| `INTERNAL_SERVER_ERROR`       | 500              | The internal server error, please try again later. |\n| `DATABASE_OPERATION_FAILED`   | 500              | Database operation failed. |\n| `RESOURCE_NOT_FOUND`          | 404              | The requested resource was not found. |\n| `UNAUTHORIZED`                | 401              | Authentication is required to access this resource. |\n| `PERMISSION_DENIED`           | 403              | Permission denied for the requested resource. |\n| `VALIDATION_ERROR`            | 422              | Request validation failed. |\n| `BAD_REQUEST`                 | 400              | The request contains invalid parameters. |\n| `INVALID_URL`                 | 404              | The requested URL was not found on this server. |\n| `HTTP_ERROR`                  | varies           | Generic HTTP error. |\n| `UNPROCESSABLE_CONTENT`       | 422              | The request is well-formed but cannot be processed. |\n\n### Error Status Codes (Client and Server Errors)\n\nHTTP status codes indicate whether an operation is successful or not.\nA response code of 2xx indicates that the operation was successful. Other error codes indicate either a\nclient error (4xx) or a server error (5xx).\nThe error table lists the errors returned by the service. Some errors are resolved if you retry the same request.\nAs a general rule, the timeout errors, network errors, throttling errors, and 5xx errors may be retried.\nThe 401 error code usually indicates expired credentials and should be retried after refreshing the access token.\nThe error table indicates which errors are likely to be resolved with successive retries.\n\nIf the value of the Retry column is\n\n- **Yes** - Submit the same request again.\n- **Yes if idempotent** - Submit the same request again, but only if the given method has been\nimplemented with idempotence.\n- **No** - Fix the problem on the client-side before submitting a new request.\n\nFor more information about retrying requests, see Error Retries and Exponential Backoff.\n\n| HTTP Status Code | Error type class                      | Retry                                             |\n| ---------------- | ------------------------------------- | ------------------------------------------------- |\n| 400              | Bad Request Exception                 | No                                                |\n| 401              | Unauthorized Exception                | No, could be retried after acquiring a new token  |\n| 403              | Access Denied Exception               | No                                                |\n| 404              | Not Found Exception                   | No                                                |\n| 422              | Unprocessable Entity Exception        | No                                                |\n| 429              | Too Many Requests Exception           | Yes                                               |\n| 500              | Internal Service Failure Exception    | Yes                                               |\n| 502              | Bad Gateway Exception                 | Yes if idempotent                                 |\n| 503              | Service Unavailable Exception         | Yes                                               |\n| 504              | Endpoint Request Timed-out Exception  | Yes if idempotent                                 |\n\n### Catching Errors\n\nFor your application to run smoothly, you need to build in logic to catch and respond to errors.\nOne typical approach is to implement your request within a try block or if-then statement.\nThe client-side SDKs typically perform retries and error checking out of the box.\n\nThe error code and description are always send in the request response body in addition to HTTP status code.\nTo troubleshoot the problem please capture the request identifier using the `x-request-id` HTTP response header. Inform the value received in this header to support team.\n\n### Error Retries and Exponential Backoff\n\nNumerous components on a network, such as DNS servers, switches, load balancers,\nand others can generate errors anywhere in the life of a given request.\n\nThe usual technique for dealing with these error responses in a networked environment\nis to implement retries in the client application.\nThis technique increases the reliability of the application and reduces operational costs for the developer.\n\nIf you're not using the official SDKs, you should retry original requests that receive server errors (5xx).\nHowever, client errors (4xx, other than a TooManyRequestsException) indicate you need to\nrevise the request itself to correct the problem before trying again.\n\nIn addition to simple retries, it is recommended to use an exponential backoff algorithm for better flow control.\nThe idea behind exponential backoff is to use progressively longer waits between retries\nfor consecutive error responses.\nFor example, you might let one second elapse\nbefore the first retry, four seconds before the second retry, 16 seconds before the third retry, and so on.\nHowever, if the request has not succeeded after a minute, the problem might be a hard limit and not the\nrequest rate.\nSet the maximum number of retries to stop around one minute.\n\n## Payload compression\n\nThe service accepts `gzip` and `br` compressed request payloads. The `Content-Encoding` header must be sent in the request\nto decode the request payload properly.\n\nThe service supports the following content encodings for responses:\n\n- `gzip`\n- `br`\n- `identity`\n\nOnly responses larger than 1KB might be encoded. Small responses are sent without encoding.\n\nThe encoding (compression) method can be negotiated with the `Accept-Encoding` header.\nThe following `Accept-Encoding` header formats, according to the [RFC 7231](<https://tools.ietf.org/html/>\nrfc7231#section-5.3.4) specification, are supported:\n\n- `Accept-Encoding:br,gzip`\n- `Accept-Encoding:` - If the Accept-Encoding header is present and empty, only the unencoded content is acceptable.\n- `Accept-Encoding:*` - This is the default value if the header is not present. This directive does not suggest that any algorithm is supported but indicates that no preference is expressed. Service will decide on the best compression method.\n- `Accept-Encoding:br;q=0.5,gzip=1.0`\n- `Accept-Encoding:gzip;q=1.0,identity;q=0.5,*;q=0`\n\nIf the header is not set, the default value is `*` as defined in RFC 7231. In such cases, the payload is compressed with best supported compression method.\n\n## Limits\n\nThe service has the following limits:\n\n- Maximum evaluation job duration: 2 hours\n- Maximum dataset size: 10,000 records\n- Maximum concurrent jobs per user: 10\n- Request rate limit: 100 requests per minute per user\n- Stuck job threshold: 1 hour (jobs in RUNNING status longer than this are automatically marked as FAILED)\n\n## Background Processing\n\nThe service includes automatic background processes to ensure reliable job execution:\n\n### Stuck Job Cleanup\n\nA periodic task runs every 10 minutes to detect and recover stuck jobs:\n- **Detection**: Identifies jobs that have been in `RUNNING` status for more than 1 hour\n- **Recovery**: Marks stuck jobs as `FAILED` with an appropriate error message\n- **Queue Progression**: Triggers the next `QUEUED` job in the same queue to start execution\n\n### Automatic Job Triggering\n\nWhen a job completes (successfully or with failure):\n1. The completed job is removed from the active queue\n2. The next `QUEUED` job in the same queue (same agent + evaluator + dataset) is automatically activated\n3. The newly activated job moves to `PENDING` status and begins execution\n\nThis ensures continuous processing of queued jobs without manual intervention.\n\n## Success Criteria\n\nRuns use programmatic rules to determine pass/fail outcomes:\n- **metric_name**: The metric to evaluate (e.g., \"faithfulness\")\n- **function**: Aggregation function (avg, count, min, max, p99)\n- **operator**: Comparison operator (gte, lte, gt, lt, eq)\n- **threshold**: Target value\n- **value**: (Optional) For categorical metrics with count function\n\nExample: `avg(faithfulness) >= 0.98` means the average faithfulness score must be at least 98%.\n",
+    "contact": {
+      "name": "API Support",
+      "url": "https://developer.trimble-ai.com/",
+      "email": "docs-team@example.com"
+    },
+    "license": {
+      "name": "Trimble Inc.",
+      "url": "https://www.trimble.com/"
+    },
+    "version": "1.0.151"
+  },
+  "servers": [
+    {
+      "url": "https://evals.stage.trimble-ai.com",
+      "description": "Model Service URls"
+    }
+  ],
+  "paths": {
+    "/v1/datasets": {
+      "get": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "List datasets",
+        "description": "Lists all datasets the authenticated user has permission to view.",
+        "operationId": "list_datasets_v1_datasets_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DatasetsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest datasets first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest datasets first)."
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DatasetType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter datasets by type (CONVERSATION or QUERY)",
+              "title": "Type"
+            },
+            "description": "Filter datasets by type (CONVERSATION or QUERY)"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter datasets by name (case-insensitive partial match)",
+              "title": "Name"
+            },
+            "description": "Filter datasets by name (case-insensitive partial match)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListDatasetsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Create dataset",
+        "description": "Creates a new dataset collection.",
+        "operationId": "create_dataset_v1_datasets_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDatasetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dataset"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/datasets/{dataset_id}": {
+      "get": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Get dataset",
+        "description": "Retrieves the metadata for a single dataset.",
+        "operationId": "get_dataset_v1_datasets__dataset_id__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dataset"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Update dataset",
+        "description": "Updates the metadata (e.g., name, description, KB links) for a dataset.",
+        "operationId": "update_dataset_v1_datasets__dataset_id__put",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dataset"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Delete dataset",
+        "description": "Deletes a dataset and all its associated records.",
+        "operationId": "delete_dataset_v1_datasets__dataset_id__delete",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evaluators": {
+      "get": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "List evaluators",
+        "description": "Lists all available evaluators (both system-managed templates and user-owned). Supports filtering by system status.",
+        "operationId": "list_evaluators_v1_evaluators_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EvaluatorsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest evaluators first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest evaluators first)."
+          },
+          {
+            "name": "isSystemManaged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by system-managed status. If true, returns only Trimble templates. If false, returns only user-owned evaluators.",
+              "title": "Issystemmanaged"
+            },
+            "description": "Filter by system-managed status. If true, returns only Trimble templates. If false, returns only user-owned evaluators."
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter evaluators by name (case-insensitive partial match)",
+              "title": "Name"
+            },
+            "description": "Filter evaluators by name (case-insensitive partial match)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListEvaluatorsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "Create evaluator",
+        "description": "Creates a new user-owned evaluator agent from scratch. The created evaluator will have `is_system_managed: false`. Creator automatically becomes an admin.",
+        "operationId": "create_evaluator_v1_evaluators_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEvaluatorRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Evaluator"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evaluators/{evaluator_id}/clone": {
+      "post": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "Clone evaluator",
+        "description": "Clones a system-managed evaluator template into a new user-owned evaluator. The new evaluator will have `is_system_managed: false` and can be customized. The `cloned_from_template` field will reference the source template.",
+        "operationId": "clone_evaluator_v1_evaluators__evaluator_id__clone_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the system evaluator to clone",
+              "title": "Evaluator Id"
+            },
+            "description": "The unique identifier for the system evaluator to clone"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluatorClone"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Evaluator"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evaluators/{evaluator_id}": {
+      "get": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "Get evaluator",
+        "description": "Retrieves the full definition for a single evaluator (system or user-owned).",
+        "operationId": "get_evaluator_v1_evaluators__evaluator_id__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluator",
+              "title": "Evaluator Id"
+            },
+            "description": "The unique identifier for the evaluator"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Evaluator"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "Update evaluator",
+        "description": "Updates an evaluator. Fails if `is_system_managed` is true (system evaluators are read-only). Only admins can update evaluators.",
+        "operationId": "update_evaluator_v1_evaluators__evaluator_id__put",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluator",
+              "title": "Evaluator Id"
+            },
+            "description": "The unique identifier for the evaluator"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateEvaluatorRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Evaluator"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Evaluators"
+        ],
+        "summary": "Delete evaluator",
+        "description": "Deletes an evaluator. Fails if `is_system_managed` is true (system evaluators cannot be deleted). Only admins can delete evaluators.",
+        "operationId": "delete_evaluator_v1_evaluators__evaluator_id__delete",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluator_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluator",
+              "title": "Evaluator Id"
+            },
+            "description": "The unique identifier for the evaluator"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/datasets/{dataset_id}/records": {
+      "get": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "List records",
+        "description": "Retrieves dataset records for a dataset. Supports filtering and pagination.",
+        "operationId": "list_records_v1_datasets__dataset_id__records_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          },
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DatasetRecordsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest records first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest records first)."
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter records by a specific metadata tag",
+              "title": "Tag"
+            },
+            "description": "Filter records by a specific metadata tag"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListDatasetRecordsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Add records",
+        "description": "Adds one or more new dataset records to the specified dataset.",
+        "operationId": "add_records_v1_datasets__dataset_id__records_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DatasetRecord"
+                  },
+                  "title": "Response Add Records V1 Datasets  Dataset Id  Records Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/datasets/{dataset_id}/records/{record_id}": {
+      "get": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Get record",
+        "description": "Retrieves a single dataset record by its ID.",
+        "operationId": "get_record_v1_datasets__dataset_id__records__record_id__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the record",
+              "title": "Record Id"
+            },
+            "description": "The unique identifier for the record"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Update record",
+        "description": "Updates a single dataset record.",
+        "operationId": "update_record_v1_datasets__dataset_id__records__record_id__put",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the record",
+              "title": "Record Id"
+            },
+            "description": "The unique identifier for the record"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Delete record",
+        "description": "Deletes a single dataset record from a dataset.",
+        "operationId": "delete_record_v1_datasets__dataset_id__records__record_id__delete",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the dataset",
+              "title": "Dataset Id"
+            },
+            "description": "The unique identifier for the dataset"
+          },
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the record",
+              "title": "Record Id"
+            },
+            "description": "The unique identifier for the record"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/results": {
+      "get": {
+        "tags": [
+          "Evaluation Results"
+        ],
+        "summary": "List evaluation results with flexible filtering",
+        "description": "Retrieves evaluation results with flexible filtering by dataset_id, record_id, job_id, agent_id, evaluator_id, and evaluator_actor. All filters are optional query parameters.",
+        "operationId": "list_results_v1_results_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EvaluationsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest evaluations first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest evaluations first)."
+          },
+          {
+            "name": "datasetId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific dataset ID",
+              "title": "Datasetid"
+            },
+            "description": "Filter by specific dataset ID"
+          },
+          {
+            "name": "recordId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific record ID",
+              "title": "Recordid"
+            },
+            "description": "Filter by specific record ID"
+          },
+          {
+            "name": "sourceType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(LLM|HUMAN)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by evaluation source type (LLM or HUMAN)",
+              "title": "Sourcetype"
+            },
+            "description": "Filter by evaluation source type (LLM or HUMAN)"
+          },
+          {
+            "name": "evaluatorId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific evaluator ID (to ensure same rubric for comparison)",
+              "title": "Evaluatorid"
+            },
+            "description": "Filter by specific evaluator ID (to ensure same rubric for comparison)"
+          },
+          {
+            "name": "evaluatorActor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific human evaluator actor (e.g., \"users:alice@example.com\")",
+              "title": "Evaluatoractor"
+            },
+            "description": "Filter by specific human evaluator actor (e.g., \"users:alice@example.com\")"
+          },
+          {
+            "name": "jobId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific job ID (to see all evaluations from a job)",
+              "title": "Jobid"
+            },
+            "description": "Filter by specific job ID (to see all evaluations from a job)"
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by specific agent ID",
+              "title": "Agentid"
+            },
+            "description": "Filter by specific agent ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListEvaluationsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Evaluation Results"
+        ],
+        "summary": "Submit evaluation result",
+        "description": "Submits a new evaluation for a specific record. The dataset_id and record_id are provided in the request body. The evaluator_actor is automatically extracted from the OAuth token.",
+        "operationId": "submit_result_v1_results_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordEvaluationSubmit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordEvaluation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/results/{evaluation_id}": {
+      "get": {
+        "tags": [
+          "Evaluation Results"
+        ],
+        "summary": "Get a specific evaluation result",
+        "description": "Retrieves details of a single evaluation by ID.",
+        "operationId": "get_result_v1_results__evaluation_id__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluation",
+              "title": "Evaluation Id"
+            },
+            "description": "The unique identifier for the evaluation"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordEvaluation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Evaluation Results"
+        ],
+        "summary": "Delete an evaluation result",
+        "description": "Deletes a specific evaluation. Only allowed for human evaluations by the original evaluator or dataset admin.",
+        "operationId": "delete_result_v1_results__evaluation_id__delete",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluation",
+              "title": "Evaluation Id"
+            },
+            "description": "The unique identifier for the evaluation"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "tags": [
+          "Evaluation Jobs"
+        ],
+        "summary": "List jobs",
+        "description": "Lists all jobs (evaluation and generation) the authenticated user has access to. Supports filtering by type, evaluator, dataset, agent, status, and executor type.",
+        "operationId": "list_jobs_v1_jobs_get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skipToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A token that represents a position in the paginated ordered collection",
+              "title": "Skiptoken"
+            },
+            "description": "A token that represents a position in the paginated ordered collection"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Maximum number of items to be returned per page",
+              "default": 50,
+              "title": "Pagesize"
+            },
+            "description": "Maximum number of items to be returned per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/JobsSortBy",
+              "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest jobs first).",
+              "default": "-createdAt"
+            },
+            "description": "Order of the items in the response. The order is applied before the pagination. If not provided, the default order is applied: by creation timestamp descending (newest jobs first)."
+          },
+          {
+            "name": "evaluatorId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by evaluator ID",
+              "title": "Evaluatorid"
+            },
+            "description": "Filter jobs by evaluator ID"
+          },
+          {
+            "name": "datasetId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by dataset ID",
+              "title": "Datasetid"
+            },
+            "description": "Filter jobs by dataset ID"
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by agent ID",
+              "title": "Agentid"
+            },
+            "description": "Filter jobs by agent ID"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(PENDING|QUEUED|RUNNING|COMPLETED|FAILED|CANCELLED)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by status (PENDING, QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED)",
+              "title": "Status"
+            },
+            "description": "Filter jobs by status (PENDING, QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED)"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(EVALUATE_AGENT|EVALUATE_RETRIEVAL|GENERATE_RECORDS)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by job type (EVALUATE_AGENT, EVALUATE_RETRIEVAL, GENERATE_RECORDS)",
+              "title": "Type"
+            },
+            "description": "Filter jobs by job type (EVALUATE_AGENT, EVALUATE_RETRIEVAL, GENERATE_RECORDS)"
+          },
+          {
+            "name": "executorType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(AUTOMATED|MANUAL)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter jobs by executor type (AUTOMATED or MANUAL)",
+              "title": "Executortype"
+            },
+            "description": "Filter jobs by executor type (AUTOMATED or MANUAL)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListJobsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Evaluation Jobs"
+        ],
+        "summary": "Create job",
+        "description": "Creates a new job (evaluation or generation). Returns 202 Accepted with initial job object (status: PENDING).",
+        "operationId": "create_job_v1_jobs_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationJobCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Evaluation Jobs"
+        ],
+        "summary": "Get job status and summary",
+        "description": "Retrieves the current status and summary of a job. When COMPLETED, includes aggregated results and pass/fail outcome.",
+        "operationId": "get_job_v1_jobs__job_id__get",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the evaluation job",
+              "title": "Job Id"
+            },
+            "description": "The unique identifier for the evaluation job"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "Evaluation Jobs"
+        ],
+        "summary": "Cancel a queued job",
+        "description": "Cancels a job that is in QUEUED status. Only admins can cancel jobs. Jobs in other statuses (PENDING, RUNNING, COMPLETED, FAILED) cannot be cancelled.",
+        "operationId": "cancel_job_v1_jobs__job_id__cancel_post",
+        "security": [
+          {
+            "OAuth2": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The unique identifier for the job to cancel",
+              "title": "Job Id"
+            },
+            "description": "The unique identifier for the job to cancel"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActualToolCall": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the tool that was called"
+          },
+          "inputParameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputparameters",
+            "description": "The actual input parameters passed to the tool"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response",
+            "description": "The actual response returned by the tool. Can be a single object or a list of results."
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp",
+            "description": "When the tool was called"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ActualToolCall",
+        "description": "Represents an actual tool call that occurred during a reference run."
+      },
+      "AgentInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Agent ID"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Agent name"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version",
+            "description": "Agent version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "AgentInfo",
+        "description": "Nested agent information in job response."
+      },
+      "AgentRetrievalContext": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "The search query sent to the knowledge base"
+          },
+          "results": {
+            "type": "string",
+            "title": "Results",
+            "description": "The raw text content returned by the knowledge base"
+          },
+          "libraryIds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Libraryids",
+            "description": "Which KB libraries were searched"
+          },
+          "searchType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Searchtype",
+            "description": "The search type used (semantic, hybrid, etc.)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "results"
+        ],
+        "title": "AgentRetrievalContext",
+        "description": "Retrieval context captured from agent stream search_knowledge_base tool calls.\n\nUnlike RetrievalResult (used for EVALUATE_RETRIEVAL with structured chunks),\nthis captures the raw KB content as returned in the agent response stream."
+      },
+      "ContentPart": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "pattern": "^(text|image|audio|video|file)$",
+            "title": "Type",
+            "description": "The type of content in this part"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "(For type: text) The text content"
+          },
+          "imageUrl": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imageurl",
+            "description": "(For type: image) Image reference with url and optional detail"
+          },
+          "audioUrl": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audiourl",
+            "description": "(For type: audio) Audio reference with url, format, duration"
+          },
+          "videoUrl": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Videourl",
+            "description": "(For type: video) Video reference with url, format, duration"
+          },
+          "fileId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fileid",
+            "description": "(For type: file) File ID from file upload system"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "ContentPart",
+        "description": "A single part of multi-modal message content."
+      },
+      "CreateDatasetRecordRequest": {
+        "properties": {
+          "recordType": {
+            "$ref": "#/components/schemas/RecordType",
+            "description": "Type of test record: CONVERSATION or QUERY"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages",
+            "description": "(Required if record_type: CONVERSATION) Multi-turn conversation for agent testing"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query",
+            "description": "(Required if record_type: QUERY) Simple search query string for retrieval testing"
+          },
+          "expectedOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedoutput",
+            "description": "The 'ground truth' ideal final answer"
+          },
+          "expectedContext": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedChunk"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedcontext",
+            "description": "The 'ground truth' ideal KB chunks that should be retrieved"
+          },
+          "expectedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedtools",
+            "description": "The 'ground truth' ideal tools the agent should have called"
+          },
+          "referenceOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referenceoutput",
+            "description": "A 'blessed' output from a past run for regression testing"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RunContext"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context",
+            "description": "Optional run context items forwarded to the agent's `context` parameter when the record is evaluated"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "A flexible JSON object for functional, searchable data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recordType"
+        ],
+        "title": "CreateDatasetRecordRequest",
+        "description": "A DatasetRecord object without system-managed fields.\n\nUse `record_type` discriminator to indicate CONVERSATION or QUERY."
+      },
+      "CreateDatasetRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "A human-readable name (e.g., 'Billing Agent RAG Evals')"
+          },
+          "datasetType": {
+            "$ref": "#/components/schemas/DatasetType",
+            "description": "The type of dataset"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A short description of the dataset's purpose"
+          },
+          "kbLibraryLinks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kblibrarylinks",
+            "description": "An array of UUIDs pointing to the KB Service libraries this dataset is associated with"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "(Optional) Initial admins for this dataset. Creator is automatically added as admin. Use claims like \"users:123456789\", \"accounts:team-name\""
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "(Optional) Initial users who can create and view records for this dataset.Use claims like \"users:123456789\", \"accounts:team-name\""
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "datasetType",
+          "kbLibraryLinks"
+        ],
+        "title": "CreateDatasetRequest",
+        "description": "Model for dataset request (create/update)."
+      },
+      "CreateEvaluatorRequest": {
+        "properties": {
+          "isSystemManaged": {
+            "type": "boolean",
+            "title": "Issystemmanaged",
+            "description": "(Optional) If true, this is a system-managed evaluatorOnly Administrators can create system-managed evaluators",
+            "default": false
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "A human-readable name (e.g., 'RAG Quality Judge')"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A short description of what this evaluator measures"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "description": "The LLM-as-a-Judge prompt"
+          },
+          "outputMetrics": {
+            "items": {
+              "$ref": "#/components/schemas/OutputMetric"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Outputmetrics",
+            "description": "The metrics this evaluator produces"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "(Optional) Initial admins for this evaluator. Creator is automatically added as admin. Use claims like \"users:123456789\", \"accounts:qa-team\", \"applications:*\""
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "(Optional) Initial users who can create jobs with this evaluator. Use claims like \"users:*\", \"accounts:engineering\""
+          },
+          "executionConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluatorExecutionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "(Optional) Execution behavior configuration (model, timeout, retry). If not provided, defaults will be used."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "prompt",
+          "outputMetrics"
+        ],
+        "title": "CreateEvaluatorRequest",
+        "description": "Payload for creating a new user-owned evaluator agent.\n\nActor creating the evaluator automatically becomes an admin.\nThe created evaluator will have `is_system_managed: false`."
+      },
+      "Dataset": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "[Primary Key] The unique identifier for the dataset"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "A human-readable name (e.g., 'Billing Agent RAG Evals')"
+          },
+          "datasetType": {
+            "$ref": "#/components/schemas/DatasetType",
+            "description": "The type of dataset"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A short description of the dataset's purpose"
+          },
+          "kbLibraryLinks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kblibrarylinks",
+            "description": "An array of UUIDs pointing to the KB Service libraries this dataset is associated with",
+            "default": []
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "Actors that can manage this dataset (update config, delete, manage permissions). Uses claim syntax: \"users:123456789\", \"accounts:team-name\". Only visible to admins."
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "Actors that can view the dataset and its records. Uses claim syntax: \"users:123456789\", \"accounts:team-name\". Only visible to admins."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "System-managed timestamp"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "System-managed timestamp"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The user CURIE who created the dataset"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby",
+            "description": "The user CURIE who last updated the dataset"
+          },
+          "accountId": {
+            "type": "string",
+            "title": "Accountid",
+            "description": "The account ID associated with this dataset"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "description": "Version number, auto-incremented on each update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "datasetType",
+          "createdAt",
+          "createdBy",
+          "accountId",
+          "version"
+        ],
+        "title": "Dataset",
+        "description": "Model for dataset response."
+      },
+      "DatasetInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Dataset ID"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Dataset name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "DatasetInfo",
+        "description": "Nested dataset information in job response."
+      },
+      "DatasetRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "[Primary Key] The unique identifier for the record"
+          },
+          "datasetId": {
+            "type": "string",
+            "title": "Datasetid",
+            "description": "[Foreign Key] The dataset this record belongs to"
+          },
+          "recordType": {
+            "$ref": "#/components/schemas/RecordType",
+            "description": "Type of test record: CONVERSATION or QUERY"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages",
+            "description": "(Required if record_type: CONVERSATION) The conversation history for agent testing"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query",
+            "description": "(Required if record_type: QUERY) A simple search query string for retrieval testing"
+          },
+          "expectedOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedoutput",
+            "description": "The 'ground truth' ideal final answer"
+          },
+          "expectedContext": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedChunk"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedcontext",
+            "description": "The 'ground truth' ideal KB chunks that should be retrieved"
+          },
+          "expectedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedtools",
+            "description": "The 'ground truth' ideal tools the agent should have called"
+          },
+          "referenceOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referenceoutput",
+            "description": "A 'blessed' output from a past run for regression testing"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RunContext"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context",
+            "description": "Optional run context items forwarded to the agent's `context` parameter when the record is evaluated"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "A flexible JSON object for functional, searchable data"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "System-managed audit field"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Createdby",
+            "description": "System-managed audit field"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat",
+            "description": "System-managed audit field"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby",
+            "description": "System-managed audit field for the last user to modify"
+          },
+          "lastActorId": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Lastactorid",
+            "description": "System-managed audit field for the last user to modify"
+          },
+          "accountId": {
+            "type": "string",
+            "title": "Accountid",
+            "description": "The account ID associated with this record"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "description": "Version number, auto-incremented on each update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "datasetId",
+          "recordType",
+          "createdAt",
+          "createdBy",
+          "updatedAt",
+          "lastActorId",
+          "accountId",
+          "version"
+        ],
+        "title": "DatasetRecord",
+        "description": "A dataset record (test case) within a dataset.\n\nSupports both agent evaluation (CONVERSATION) and\nretrieval evaluation (QUERY) record types."
+      },
+      "DatasetRecordsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt"
+        ],
+        "title": "DatasetRecordsSortBy",
+        "description": "Sort options for dataset record listings."
+      },
+      "DatasetType": {
+        "type": "string",
+        "enum": [
+          "CONVERSATION",
+          "QUERY"
+        ],
+        "title": "DatasetType",
+        "description": "Dataset type enumeration."
+      },
+      "DatasetsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt",
+          "name",
+          "-name"
+        ],
+        "title": "DatasetsSortBy",
+        "description": "Sort options for dataset listings."
+      },
+      "EvaluationJob": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Unique identifier for this evaluation job"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Name of the job"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Optional description of the job"
+          },
+          "type": {
+            "$ref": "#/components/schemas/JobType",
+            "description": "Type of job"
+          },
+          "runNumber": {
+            "type": "integer",
+            "title": "Runnumber",
+            "description": "The run number of the job",
+            "default": 0
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetInfo",
+            "description": "The dataset being evaluated"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobAssignee"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who executes this job (for EVALUATE_AGENT/EVALUATE_RETRIEVAL jobs)"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Agent information (for EVALUATE_AGENT jobs)"
+          },
+          "kbLibrary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KBLibraryInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "KB library information (for EVALUATE_AGENT/EVALUATE_RETRIEVAL jobs)"
+          },
+          "kbLibraryVersions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kblibraryversions",
+            "description": "Snapshot of KB library versions"
+          },
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid",
+            "description": "The model used by the evaluator/generator"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus",
+            "description": "Current state of the job"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Final result based on success criteria"
+          },
+          "successCriteria": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SuccessCriterion"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successcriteria",
+            "description": "Pass/fail rules (for EVALUATE_AGENT/EVALUATE_RETRIEVAL jobs)"
+          },
+          "summaryResults": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SummaryResult-Output"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summaryresults",
+            "description": "Aggregated scores (for evaluation jobs)"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": "Rolling summary of evaluation results (updated incrementally)"
+          },
+          "totalRecords": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalrecords",
+            "description": "Total number of records in dataset"
+          },
+          "completedRecords": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completedrecords",
+            "description": "Number of records successfully evaluated"
+          },
+          "failedRecords": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failedrecords",
+            "description": "Number of records that failed evaluation"
+          },
+          "totalRecordsToGenerate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalrecordstogenerate",
+            "description": "Target number of records to generate"
+          },
+          "totalRecordsGenerated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalrecordsgenerated",
+            "description": "Actual number of records generated so far"
+          },
+          "evolutionMix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvolutionMix"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evolution strategy distribution"
+          },
+          "generationPrompts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationPrompts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Prompt templates for generation"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "Actors that can manage this job (update config, delete, manage permissions). Uses claim syntax: \"users:123456789\", \"accounts:team-name\". Only visible to admins."
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "Actors that can view evaluations for this job. Uses claim syntax: \"users:123456789\", \"accounts:team-name\". Only visible to admins."
+          },
+          "accountId": {
+            "type": "string",
+            "title": "Accountid",
+            "description": "The account ID associated with this job"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The user CURIE who created the job"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby",
+            "description": "The user CURIE who last updated the job"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "Job creation timestamp"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "Job last updated timestamp"
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completedat",
+            "description": "Job completion timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "dataset",
+          "status",
+          "accountId",
+          "createdBy",
+          "createdAt"
+        ],
+        "title": "EvaluationJob",
+        "description": "An evaluation job represents the execution of an evaluator against a dataset.",
+        "example": {
+          "accountId": "8f7b3c4a-1234-5678-9abc-def012345678",
+          "agent": {
+            "id": "support-agent-v2",
+            "name": "Support Agent",
+            "version": 15
+          },
+          "assignee": {
+            "actors": [
+              "evaluator:9b7d4f2a-5678-4321-abcd-1234567890ab"
+            ]
+          },
+          "completedAt": "2025-11-24T10:15:00Z",
+          "completedRecords": 100,
+          "createdAt": "2025-11-24T10:00:00Z",
+          "createdBy": "users:8f7b3c4a-1234-5678-9abc-def012345678",
+          "dataset": {
+            "id": "8f7b3c4a-1234-5678-9abc-def012345678",
+            "name": "Customer Support Dataset"
+          },
+          "description": "Evaluate support agent performance on customer queries",
+          "failedRecords": 0,
+          "id": "c4d5e6f7-8901-2345-6789-0abcdef12345",
+          "name": "Support Agent Evaluation",
+          "outcome": "PASSED",
+          "status": "COMPLETED",
+          "successCriteria": [
+            {
+              "function": "avg",
+              "metricName": "faithfulness",
+              "operator": "gte",
+              "threshold": 0.9
+            }
+          ],
+          "totalRecords": 100,
+          "type": "EVALUATE_AGENT"
+        }
+      },
+      "EvaluationJobCreate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "(Optional) Name of the job. If not provided, it will be auto-generated."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Optional description of the job"
+          },
+          "type": {
+            "$ref": "#/components/schemas/JobType",
+            "description": "Type of job"
+          },
+          "datasetId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Datasetid",
+            "description": "The dataset to evaluate or generate records for"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobAssignee"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who executes this job (required for EVALUATE_AGENT/EVALUATE_RETRIEVAL)"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "(Optional) Initial admins for this job. Creator is automatically added as admin. Use claims like \"users:123456789\", \"accounts:team-name\""
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "(Optional) Initial users who can view evaluations for this job. Use claims like \"users:123456789\", \"accounts:team-name\""
+          },
+          "agentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentid",
+            "description": "Agent ID (required for EVALUATE_AGENT jobs)"
+          },
+          "agentVersion": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentversion",
+            "description": "Agent version number (optional, defaults to latest)"
+          },
+          "successCriteria": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SuccessCriterion"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successcriteria",
+            "description": "Pass/fail rules (required for EVALUATE_AGENT/EVALUATE_RETRIEVAL)"
+          },
+          "totalRecordsToGenerate": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalrecordstogenerate",
+            "description": "Number of records to generate (required for GENERATE_RECORDS)"
+          },
+          "evolutionMix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvolutionMix"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evolution strategy distribution (required for GENERATE_RECORDS)"
+          },
+          "generationPrompts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationPrompts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Prompt templates (required for GENERATE_RECORDS)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "datasetId"
+        ],
+        "title": "EvaluationJobCreate",
+        "description": "Payload to create and execute a job.\n\nNote: The job name is auto-generated using the pattern:"
+      },
+      "EvaluationSourceType": {
+        "type": "string",
+        "enum": [
+          "LLM",
+          "HUMAN"
+        ],
+        "title": "EvaluationSourceType",
+        "description": "Evaluation source type enumeration."
+      },
+      "EvaluationsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt",
+          "evaluatedAt",
+          "-evaluatedAt"
+        ],
+        "title": "EvaluationsSortBy",
+        "description": "Sort options for record evaluation listings."
+      },
+      "Evaluator": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "[Primary Key] The unique identifier for the evaluator"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "A human-readable name (e.g., 'RAG Quality Judge')"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A short description of what this evaluator measures"
+          },
+          "isSystemManaged": {
+            "type": "boolean",
+            "title": "Issystemmanaged",
+            "description": "If true, this is a Trimble-managed template evaluator (read-only, cannot be used for jobs directly). If false, this is a user-owned evaluator that can be used for job creation."
+          },
+          "clonedFromTemplate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clonedfromtemplate",
+            "description": "(Optional) If this evaluator was cloned, the id of the source template evaluator"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt",
+            "description": "The LLM-as-a-Judge prompt"
+          },
+          "outputMetrics": {
+            "items": {
+              "$ref": "#/components/schemas/OutputMetric"
+            },
+            "type": "array",
+            "title": "Outputmetrics",
+            "description": "[Required] A list of all metrics this evaluator produces"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "Actors that can manage this evaluator (update config, delete, manage permissions, create jobs). For system evaluators: [\"accounts:trimble-placeholder-of-employees\"]. Uses same claim syntax as agents.yaml: \"users:123456789\", \"accounts:qa-team\", \"applications:*\""
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "Actors that can create and view jobs with this evaluator. Note: For system evaluators, users must clone them first before creating jobs. Uses same claim syntax as agents.yaml."
+          },
+          "executionConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluatorExecutionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "(Optional) Configuration for execution behavior (model, timeout, retry)"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The actor who created this evaluator"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "System-managed timestamp"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "System-managed timestamp"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby",
+            "description": "The user CURIE who last updated the evaluator"
+          },
+          "accountId": {
+            "type": "string",
+            "title": "Accountid",
+            "description": "The account ID associated with this evaluator"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "description": "Version number, auto-incremented on each update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "isSystemManaged",
+          "outputMetrics",
+          "createdBy",
+          "createdAt",
+          "accountId",
+          "version"
+        ],
+        "title": "Evaluator",
+        "description": "An evaluator acts as an agent that can execute evaluation jobs.\n\nIt has a rubric (metrics), execution configuration (model, permissions),\nand can be invoked against datasets.\n\nSystem vs User Evaluators:\n- System-managed evaluators (`is_system_managed: true`) are read-only templates\n- User evaluators can be created from scratch or cloned from system templates\n- Only user evaluators can be used for job creation\n\nAccess Control: Similar to agents.yaml, evaluators have admins and users\nwith role-based permissions."
+      },
+      "EvaluatorClone": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "(Optional) Name for the cloned evaluator. If not provided, defaults to \"{original_name} (Copy)\"."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "(Optional) Override the description"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "(Optional) Admins for the cloned evaluator. If not provided, creator becomes sole admin."
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "(Optional) Users who can create jobs with the cloned evaluator. Use claims like \"users:*\", \"accounts:engineering\""
+          },
+          "executionConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluatorExecutionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "(Optional) Override execution behavior configuration. If not provided, inherits from source template."
+          }
+        },
+        "type": "object",
+        "title": "EvaluatorClone",
+        "description": "Payload for cloning an evaluator (typically a system template).\n\nCreates a new user-owned evaluator with `is_system_managed: false`.\nThe cloned evaluator can be customized after creation."
+      },
+      "EvaluatorExecutionConfig": {
+        "properties": {
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid",
+            "description": "The LLM model to use for LLM-as-a-Judge evaluations (e.g., 'gpt-4', 'claude-3-opus')"
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Timeoutseconds",
+            "description": "Maximum time allowed for evaluating a single record",
+            "default": 300
+          },
+          "retryConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetryConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Retry configuration for handling transient failures"
+          },
+          "searchType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(hybrid|semantic|fulltext)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Searchtype",
+            "description": "Type of search for KB retrieval: 'hybrid', 'semantic', or 'fulltext'. Default is 'hybrid' (recommended for most use cases)",
+            "default": "hybrid"
+          },
+          "topK": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 50,
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topk",
+            "description": "Number of chunks to retrieve from KB Service. Maximum is 50. Default is 10.",
+            "default": 10
+          },
+          "scoreThreshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorethreshold",
+            "description": "Minimum score threshold for retrieved chunks (0.0-1.0). If set, only chunks with score >= threshold are returned."
+          },
+          "searchMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(all|any)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Searchmode",
+            "description": "Search mode for fulltext search: 'all' (AND logic) or 'any' (OR logic). Note: Currently not supported by KB Service and is ignored."
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter",
+            "description": "FIQL filter expression to limit search scope based on metadata. Example: tags=in=(product:tekla-structures;version:2025)"
+          }
+        },
+        "type": "object",
+        "title": "EvaluatorExecutionConfig",
+        "description": "Configuration for evaluator execution behavior.\n\nIncludes model selection, timeouts, retry logic, and retrieval parameters."
+      },
+      "EvaluatorsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt",
+          "name",
+          "-name"
+        ],
+        "title": "EvaluatorsSortBy",
+        "description": "Sort options for evaluator listings."
+      },
+      "EvolutionMix": {
+        "properties": {
+          "reasoning": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Reasoning",
+            "description": "Proportion of records requiring multi-step reasoning"
+          },
+          "multicontext": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Multicontext",
+            "description": "Proportion of records requiring information from multiple contexts"
+          },
+          "comparative": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Comparative",
+            "description": "Proportion of records requiring comparison between entities"
+          },
+          "concretizing": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Concretizing",
+            "description": "Proportion of records making abstract concepts more concrete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reasoning",
+          "multicontext",
+          "comparative",
+          "concretizing"
+        ],
+        "title": "EvolutionMix",
+        "description": "Distribution of evolution strategies for generating diverse test cases."
+      },
+      "ExpectedChunk": {
+        "properties": {
+          "chunkId": {
+            "type": "string",
+            "title": "Chunkid",
+            "description": "The unique identifier of the chunk from KB Service"
+          },
+          "relevance": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(critical|important|supplementary)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relevance",
+            "description": "Importance level: critical, important, or supplementary"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why this chunk is expected (for documentation/debugging)"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "The chunk text (for human readability when reviewing records)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunkId"
+        ],
+        "title": "ExpectedChunk",
+        "description": "Defines an expected KB chunk that should be retrieved for a query.\n\nUsed as ground truth for retrieval evaluation."
+      },
+      "ExpectedToolCall": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the tool to be called"
+          },
+          "inputParameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputparameters",
+            "description": "The expected input parameters for the tool"
+          },
+          "expectedResponse": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedresponse",
+            "description": "The mocked JSON response to be returned by the tool"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ExpectedToolCall",
+        "description": "Expected tool call definition."
+      },
+      "GenerationPrompts": {
+        "properties": {
+          "persona": {
+            "type": "string",
+            "title": "Persona",
+            "description": "The persona/role the LLM should adopt"
+          },
+          "inputStyle": {
+            "type": "string",
+            "title": "Inputstyle",
+            "description": "The style/format of generated user inputs"
+          },
+          "outputStyle": {
+            "type": "string",
+            "title": "Outputstyle",
+            "description": "The style/format of generated expected outputs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "persona",
+          "inputStyle",
+          "outputStyle"
+        ],
+        "title": "GenerationPrompts",
+        "description": "Prompt templates that guide the LLM-as-a-Curator."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HrefResponse": {
+        "properties": {
+          "href": {
+            "type": "string",
+            "title": "Href",
+            "description": "URL for the link"
+          }
+        },
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "title": "HrefResponse",
+        "description": "HREF link response."
+      },
+      "JobAssignee": {
+        "properties": {
+          "actors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Actors",
+            "description": "Actor claims defining who executes this job",
+            "examples": [
+              [
+                "evaluator:9b7d4f2a-5678-4321-abcd-1234567890ab"
+              ],
+              [
+                "users:alice@example.com",
+                "accounts:qa-team"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "actors"
+        ],
+        "title": "JobAssignee",
+        "description": "Unified assignee model using actor claims.\n\nActor types:\n- evaluator:{uuid} - LLM evaluator agent (AUTOMATED execution)\n- users:{identifier} - Specific user (MANUAL execution)\n- accounts:{name} - All users in an account (MANUAL execution)\n- applications:{name} - Specific application (MANUAL execution)"
+      },
+      "JobOutcome": {
+        "type": "string",
+        "enum": [
+          "PASSED",
+          "FAILED",
+          "N/A"
+        ],
+        "title": "JobOutcome",
+        "description": "Job outcome enumeration for evaluation jobs."
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "QUEUED",
+          "RUNNING",
+          "COMPLETED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "JobStatus",
+        "description": "Job status enumeration."
+      },
+      "JobType": {
+        "type": "string",
+        "enum": [
+          "EVALUATE_AGENT",
+          "EVALUATE_RETRIEVAL",
+          "GENERATE_RECORDS"
+        ],
+        "title": "JobType",
+        "description": "Job type enumeration."
+      },
+      "JobsSortBy": {
+        "type": "string",
+        "enum": [
+          "createdAt",
+          "-createdAt"
+        ],
+        "title": "JobsSortBy",
+        "description": "Sort options for job listings."
+      },
+      "KBLibraryInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "KB library ID"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "KB library name"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version",
+            "description": "KB library version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "KBLibraryInfo",
+        "description": "Nested KB library information in job response."
+      },
+      "LinksResponse": {
+        "properties": {
+          "first": {
+            "$ref": "#/components/schemas/HrefResponse",
+            "description": "Link to first page"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HrefResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to next page (null if no more pages)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "first"
+        ],
+        "title": "LinksResponse",
+        "description": "Pagination links response."
+      },
+      "ListDatasetRecordsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetRecord"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of items"
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListDatasetRecordsResponse",
+        "description": "Paginated list of dataset records."
+      },
+      "ListDatasetsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Dataset"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of items"
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListDatasetsResponse",
+        "description": "Paginated list of datasets."
+      },
+      "ListEvaluationsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecordEvaluation"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of items"
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListEvaluationsResponse",
+        "description": "Paginated list of record evaluations."
+      },
+      "ListEvaluatorsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Evaluator"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of items"
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListEvaluatorsResponse",
+        "description": "Paginated list of evaluators."
+      },
+      "ListJobsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationJob"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of items"
+          },
+          "links": {
+            "$ref": "#/components/schemas/LinksResponse",
+            "description": "Pagination links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "links"
+        ],
+        "title": "ListJobsResponse",
+        "description": "Paginated list of jobs."
+      },
+      "Message": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "pattern": "^(user|assistant)$",
+            "title": "Role",
+            "description": "The role of the message sender"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ContentPart"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Content",
+            "description": "Plain text or multi-modal content array"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "Message",
+        "description": "A message in the conversation history.\n\nSupports multi-modal content (text, images, audio, video)."
+      },
+      "MetricOutputType": {
+        "type": "string",
+        "enum": [
+          "BOOLEAN",
+          "NUMERICAL",
+          "CATEGORICAL"
+        ],
+        "title": "MetricOutputType",
+        "description": "Metric output type enumeration."
+      },
+      "MultiModalOutput": {
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "Text portion of the output"
+          },
+          "generatedImages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generatedimages",
+            "description": "Array of generated images with url, prompt, revised_prompt"
+          },
+          "generatedAudio": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generatedaudio",
+            "description": "Array of generated audio files with url, format, voice, duration"
+          },
+          "generatedVideo": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generatedvideo",
+            "description": "Array of generated videos with url, format, duration"
+          }
+        },
+        "type": "object",
+        "title": "MultiModalOutput",
+        "description": "Multi-modal output that can contain text, generated images, audio, or video.\n\nUsed for agents that generate images (DALL-E, Stable Diffusion)\nor synthesize speech."
+      },
+      "OutputMetric": {
+        "properties": {
+          "metricName": {
+            "type": "string",
+            "title": "Metricname",
+            "description": "The key for the metric (e.g., 'faithfulness')"
+          },
+          "outputType": {
+            "$ref": "#/components/schemas/MetricOutputType",
+            "description": "The data type of the metric's output"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A brief description of what the metric measures"
+          },
+          "outputSchema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputschema",
+            "description": "Schema constraints (e.g., {\"min\": 0, \"max\": 5} or {\"categories\": [\"safe\", \"unsafe\"]})"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metricName",
+          "outputType"
+        ],
+        "title": "OutputMetric",
+        "description": "Definition of a metric that an evaluator produces."
+      },
+      "RecordCreateRequest": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/CreateDatasetRecordRequest"
+            },
+            "type": "array",
+            "title": "Records",
+            "description": "List of records to create"
+          }
+        },
+        "type": "object",
+        "required": [
+          "records"
+        ],
+        "title": "RecordCreateRequest",
+        "description": "Request body for creating one or more records."
+      },
+      "RecordEvaluation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "[Primary Key] Unique identifier for this evaluation"
+          },
+          "recordId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Recordid",
+            "description": "The dataset record that was evaluated"
+          },
+          "datasetId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Datasetid",
+            "description": "The dataset this record belongs to"
+          },
+          "sourceType": {
+            "$ref": "#/components/schemas/EvaluationSourceType",
+            "description": "Whether this evaluation was performed by an LLM or human"
+          },
+          "evaluatorId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Evaluatorid",
+            "description": "The evaluator (agent) that performed or defined this evaluation"
+          },
+          "evaluatorActor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluatoractor",
+            "description": "The actor who performed the evaluation. Auto-populated from OAuth token for HUMAN evaluations. System-managed for LLM evaluations."
+          },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobid",
+            "description": "The evaluation job this evaluation is associated with. Context inherited from job: agent_id, agent_version, kb_library_versions, model_id. Links to GET /jobs/{job_id} for full job context."
+          },
+          "traceId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traceid",
+            "description": "Reference to the execution trace. For EVALUATE_AGENT jobs: agent_trace_id (from Agent Service). For EVALUATE_RETRIEVAL jobs: search_trace_id (from KB Service). The trace contains: actual_output, execution details, tool calls, timing."
+          },
+          "agentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentid",
+            "description": "The agent that was evaluated. Auto-populated from job."
+          },
+          "agentVersion": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentversion",
+            "description": "The version number of the agent that was evaluated. Auto-populated from job."
+          },
+          "kbLibraryVersions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kblibraryversions",
+            "description": "Snapshot of KB library versions at evaluation time. Auto-populated from job. Map of library_id -> version_number."
+          },
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid",
+            "description": "The model used for evaluation. Auto-populated from job (from evaluator's execution_config)."
+          },
+          "actualOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "$ref": "#/components/schemas/RetrievalResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actualoutput",
+            "description": "The output that was evaluated. Auto-fetched from trace_id. For EVALUATE_AGENT jobs: Retrieved from agent trace. For EVALUATE_RETRIEVAL jobs: Retrieved from search trace."
+          },
+          "actualTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ActualToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actualtools",
+            "description": "The actual tool calls made by the agent during evaluation. Each tool call includes the tool name, input parameters, and response."
+          },
+          "actualContext": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AgentRetrievalContext"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actualcontext",
+            "description": "The actual chunks retrieved by the agent"
+          },
+          "expectedOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedoutput",
+            "description": "The ground-truth ideal final answer from the dataset record"
+          },
+          "expectedContext": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedChunk"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedcontext",
+            "description": "The ground-truth ideal KB chunks from the dataset record"
+          },
+          "expectedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedtools",
+            "description": "The ground-truth ideal tool calls from the dataset record"
+          },
+          "scores": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Scores",
+            "description": "Map of metric_name to score value. Example: {\"faithfulness\": 0.95, \"relevance\": 0.88}"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "(Optional) Comments or notes from the evaluator"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/JobOutcome",
+            "description": "Outcome of the evaluation (PASSED/FAILED)"
+          },
+          "evaluatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Evaluatedat",
+            "description": "Timestamp when this evaluation was performed"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat",
+            "description": "System-managed timestamp"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat",
+            "description": "System-managed timestamp"
+          },
+          "createdBy": {
+            "type": "string",
+            "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+            "title": "Createdby",
+            "description": "The user CURIE who created the evaluation"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(users|applications|evaluator):([a-zA-Z0-9-]+)$",
+                "description": "CURIE format identifier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby",
+            "description": "The user CURIE who last updated the evaluation"
+          },
+          "accountId": {
+            "type": "string",
+            "title": "Accountid",
+            "description": "The account ID associated with this evaluation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "recordId",
+          "datasetId",
+          "sourceType",
+          "evaluatorId",
+          "scores",
+          "outcome",
+          "evaluatedAt",
+          "createdAt",
+          "createdBy",
+          "accountId"
+        ],
+        "title": "RecordEvaluation",
+        "description": "A single evaluation (human or LLM) for a specific record.\n\nConnection to Jobs: When an evaluator job executes, it creates individual\nRecordEvaluation entries for each record in the dataset. The `job_id` field\nlinks back to the job that created this evaluation.\n\nContext Tracking: Captures agent version, KB library versions, and model used\nto enable accurate comparison and regression testing."
+      },
+      "RecordEvaluationSubmit": {
+        "properties": {
+          "datasetId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Datasetid",
+            "description": "[Required] The dataset this record belongs to"
+          },
+          "recordId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Recordid",
+            "description": "[Required] The dataset record being evaluated"
+          },
+          "evaluatorId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Evaluatorid",
+            "description": "[Required] The evaluator (rubric) to use for scoring. Should match the evaluator used by the job for consistency."
+          },
+          "jobId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Jobid",
+            "description": "[Required] The job whose output is being reviewed. Auto-populates: agent_id, agent_version, kb_library_versions, model_id"
+          },
+          "traceId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traceid",
+            "description": "[Required] The execution trace ID. For EVALUATE_AGENT jobs: agent_trace_id from Agent Service. For EVALUATE_RETRIEVAL jobs: search_trace_id from KB Service. Auto-fetches: actual_output"
+          },
+          "scores": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Scores",
+            "description": "[Required] Map of metric_name to score value. Must include all metrics defined in the evaluator's output_metrics. Example: {\"faithfulness\": 0.95, \"relevance\": 0.88, \"safety\": true}"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "(Optional) Comments or notes about the evaluation. Recommended for explaining scores, especially when disagreeing with LLM evaluation."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/JobOutcome",
+            "description": "Outcome of the evaluation (PASSED/FAILED)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "datasetId",
+          "recordId",
+          "evaluatorId",
+          "jobId",
+          "scores",
+          "outcome"
+        ],
+        "title": "RecordEvaluationSubmit",
+        "description": "Payload for submitting a new evaluation for a record.\n\nWhat you provide (6 fields):\n- dataset_id, record_id, evaluator_id, job_id, trace_id, scores\n\nWhat API auto-populates (9 fields):\n- evaluator_actor (from OAuth token)\n- agent_id, agent_version, kb_library_versions, model_id (from job)\n- actual_output (from trace)\n- source_type, evaluated_at, created_at (system-managed)"
+      },
+      "RecordType": {
+        "type": "string",
+        "enum": [
+          "CONVERSATION",
+          "QUERY"
+        ],
+        "title": "RecordType",
+        "description": "Record type enumeration."
+      },
+      "RecordUpdateRequest": {
+        "properties": {
+          "recordType": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Update the record type (changes which fields are used)"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query",
+            "description": "(For QUERY records) Update the search query"
+          },
+          "expectedOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedoutput",
+            "description": "The 'ground truth' ideal final answer from the agent"
+          },
+          "expectedContext": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedChunk"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedcontext",
+            "description": "The 'ground truth' ideal KB chunks that should be retrieved"
+          },
+          "expectedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedtools",
+            "description": "The 'ground truth' ideal tools the agent should have called"
+          },
+          "referenceOutput": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/MultiModalOutput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referenceoutput",
+            "description": "A 'blessed' output from a past run for regression testing"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RunContext"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context",
+            "description": "Optional run context items forwarded to the agent's `context` parameter when the record is evaluated"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "A flexible JSON object for functional, searchable data"
+          }
+        },
+        "type": "object",
+        "title": "RecordUpdateRequest",
+        "description": "Fields that can be updated on a DatasetRecord.\n\nTypically for HITL workflows or storing reference run results."
+      },
+      "RetrievalResult": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "The query that was executed against KB Service"
+          },
+          "retrievedChunks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Retrievedchunks",
+            "description": "Array of retrieved chunks in ranked order"
+          },
+          "retrievalParams": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrievalparams",
+            "description": "Parameters used for retrieval (top, score_threshold, libraries)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "retrievedChunks"
+        ],
+        "title": "RetrievalResult",
+        "description": "Results from a KB Service retrieval query.\n\nContains the chunks that were retrieved, with their ranking and scores."
+      },
+      "RetryConfig": {
+        "properties": {
+          "maxRetries": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Maxretries",
+            "description": "Maximum number of retry attempts on transient failures",
+            "default": 3
+          },
+          "backoffMultiplier": {
+            "type": "number",
+            "minimum": 1,
+            "title": "Backoffmultiplier",
+            "description": "Multiplier for exponential backoff between retries",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "title": "RetryConfig",
+        "description": "Retry configuration for handling transient failures during evaluation."
+      },
+      "RunContext": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Unique description/key for the context item"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "String value for the context item"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "value"
+        ],
+        "title": "RunContext",
+        "description": "A single context item forwarded to the agent's `context` parameter.\n\nMirrors the Trimble agent SDK's `Context` type: `description` and `value`\nare required, and additional arbitrary properties are allowed and preserved."
+      },
+      "SuccessCriterion": {
+        "properties": {
+          "metricName": {
+            "type": "string",
+            "title": "Metricname",
+            "description": "The metric key (e.g., faithfulness)"
+          },
+          "function": {
+            "type": "string",
+            "pattern": "^(avg|count|min|max|p50|p90|p95|p99)$",
+            "title": "Function",
+            "description": "Aggregation function"
+          },
+          "operator": {
+            "type": "string",
+            "pattern": "^(gte|lte|gt|lt|eq)$",
+            "title": "Operator",
+            "description": "Comparison operator"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold",
+            "description": "The value to compare against"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "The specific categorical value to filter on for a count function"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metricName",
+          "function",
+          "operator",
+          "threshold"
+        ],
+        "title": "SuccessCriterion",
+        "description": "A rule that defines a pass/fail condition for a single metric."
+      },
+      "SummaryResult-Input": {
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/SuccessCriterion"
+          },
+          "statistic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            ],
+            "title": "Statistic",
+            "description": "The calculated statistic or categorical statistic"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/JobOutcome",
+            "title": "Outcome",
+            "description": "Pass/fail outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule",
+          "statistic",
+          "outcome"
+        ],
+        "title": "SummaryResult",
+        "description": "The calculated result for a single success criterion."
+      },
+      "SummaryResult-Output": {
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/SuccessCriterion"
+          },
+          "statistic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            ],
+            "title": "Statistic",
+            "description": "The calculated statistic or categorical statistic"
+          },
+          "outcome": {
+            "type": "string",
+            "pattern": "^(PASSED|FAILED)$",
+            "title": "Outcome",
+            "description": "Pass/fail outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule",
+          "statistic",
+          "outcome"
+        ],
+        "title": "SummaryResult",
+        "description": "The calculated result for a single success criterion."
+      },
+      "UpdateDatasetRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "A new human-readable name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A new description"
+          },
+          "kbLibraryLinks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kblibrarylinks",
+            "description": "An updated array of KB Service library UUIDs"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "Updated list of admin claims"
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "Updated list of user claims"
+          }
+        },
+        "type": "object",
+        "title": "UpdateDatasetRequest",
+        "description": "Model for updating a dataset."
+      },
+      "UpdateEvaluatorRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "A new human-readable name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "A new description"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt",
+            "description": "An updated LLM-as-a-Judge prompt"
+          },
+          "outputMetrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OutputMetric"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputmetrics",
+            "description": "An updated list of metrics this evaluator produces"
+          },
+          "admins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admins",
+            "description": "Updated list of admin claims"
+          },
+          "users": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^trimble-employee:(true|false)$|^trimble-automation:(true|false)$|^(users|applications|accounts|evaluator):(\\*|[\\w_.-]+)$",
+                  "description": "Actor claims"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Users",
+            "description": "Updated list of user claims"
+          },
+          "executionConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluatorExecutionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Updated execution behavior configuration (model, timeout, retry)"
+          }
+        },
+        "type": "object",
+        "title": "UpdateEvaluatorRequest",
+        "description": "Payload for updating a user-owned evaluator.\n\nOnly admins can update evaluators.\nFails if `is_system_managed: true` (system evaluators are read-only)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "flows": {
+          "clientCredentials": {
+            "scopes": {
+              "evals": "Use evaluation service."
+            },
+            "tokenUrl": "https://stage.id.trimblecloud.com/oauth/token"
+          },
+          "authorizationCode": {
+            "scopes": {
+              "openid": "Get user identity.",
+              "evals": "Use evaluation service."
+            },
+            "authorizationUrl": "https://stage.id.trimblecloud.com/oauth/authorize",
+            "tokenUrl": "https://stage.id.trimblecloud.com/oauth/token"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Datasets",
+      "description": "Endpoints for managing datasets and their records. Datasets serve as containers grouping related test cases, while dataset records represent individual test cases withinput data, expected outputs, and ground truth for evaluation."
+    },
+    {
+      "name": "Evaluators",
+      "description": "Endpoints for managing evaluator agents (rubrics, permissions, and execution configuration)."
+    },
+    {
+      "name": "Evaluation Jobs",
+      "description": "Endpoints for managing evaluation jobs (top-level resource). Jobs execute evaluators against datasets asynchronously, creating RecordEvaluation entries for each record."
+    },
+    {
+      "name": "Evaluation Results",
+      "description": "Endpoints for managing evaluation results with flexible filtering by dataset, record, job, agent, evaluator, and actor. Stores both human and LLM evaluations. Enables cross-dataset analysis and inter-rater reliability comparisons."
+    }
+  ]
+}
