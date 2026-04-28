@@ -60,7 +60,9 @@ def _parse_api_urls_from_urls_txt(text: str) -> dict[str, str]:
 
 def load_spec_source_urls(urls_file: Path | None) -> dict[str, str]:
     """Resolve OpenAPI download URLs: defaults for every spec, overridden by urls.txt ## APIs."""
-    base = "https://developer.stage.trimble-ai.com/api"
+    base = (
+        os.environ.get("TRIMBLE_AGENTIC_OPENAPI_FALLBACK_BASE") or "https://developer.ai.trimble.com/api"
+    ).rstrip("/")
     fallback = {sid: f"{base}/{path}" for path, sid in _API_PATH_TO_SPEC_ID.items()}
     if not urls_file or not urls_file.is_file():
         return fallback

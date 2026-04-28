@@ -7,7 +7,7 @@ Local assets for building against the **Trimble Agentic AI** developer APIs: exp
 | Path | Purpose |
 |------|--------|
 | `docs/api/` | OpenAPI 3.x JSON (`agents.json`, `tools.json`, …) — primary MCP source |
-| `docs/urls.txt` | Curated developer portal links |
+| `docs/urls.txt` | Curated developer portal links (default host **`developer.ai.trimble.com`**) — must match your Trimble Identity environment |
 | `docs/mcp-llms-full.txt` | Optional MCP reference material (large) |
 | `trimble-agentic-docs-mcp/` | Python MCP package (Streamable HTTP only) |
 | `docs/cached/dev-portal/` | Optional: extracted text from **## Docs** (bundle in releases or CI) |
@@ -70,7 +70,7 @@ trimble-agentic-openapi-sync
 
 Flags: `--openapi-only`, `--dev-docs-only`, `--dry-run`, `--dev-docs-cache-dir`, `--if-changed` (skip full GET when HEAD ETag matches the saved manifest; off by default for this CLI).
 
-This updates `docs/api/*.json` plus `docs/api/_openapi_manifest.json`, and `docs/cached/dev-portal/pages/*.json` plus `manifest.json`.
+This updates `docs/api/*.json` plus `docs/api/_openapi_manifest.json`, and `docs/cached/dev-portal/pages/*.json` plus `manifest.json`. You do not need to hand-edit JSON under `docs/api/` when switching portal hosts—run a full sync after changing `docs/urls.txt`.
 
 ### Weekly refresh (hands-off)
 
@@ -100,19 +100,23 @@ Set these env vars on the refresh job host:
 Behavior:
 
 - If `TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL` is set, refresh runner obtains a new access token each cycle and exports it to `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` in-process.
-- **Issuer must match the portal:** URLs in `docs/urls.txt` use **`developer.stage.trimble-ai.com`**, so use the **stage** token endpoint (for example `https://stage.id.trimblecloud.com/oauth2/token`). A token from **`id.trimble.com`** (production) typically gets **401** on stage.
+- **Issuer must match the portal host** in `docs/urls.txt` (same environment for TID and developer portal). Example: production portal **`https://developer.ai.trimble.com/`** pairs with **`https://id.trimble.com/oauth/token`**. Stage portal **`developer.stage.trimble-ai.com`** pairs with the **stage** token endpoint (for example `https://stage.id.trimblecloud.com/oauth2/token`). Mixing prod tokens with stage URLs (or the reverse) typically yields **401**.
 - If OAuth vars are not set, runner uses any pre-set `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` as-is.
 - Default grant selection is `refresh_token` when `TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN` is present, otherwise `client_credentials`.
 
 Example (client credentials):
 
+Production Trimble Identity + production portal (see `docs/urls.txt`):
+
 ```bash
-export TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL="https://stage.id.trimblecloud.com/oauth2/token"
+export TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL="https://id.trimble.com/oauth/token"
 export TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_ID="your_client_id"
 export TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_SECRET="your_client_secret"
 export TRIMBLE_AGENTIC_SYNC_OAUTH_SCOPE="openid agents tools models kb"
 trimble-agentic-docs-refresh --if-changed
 ```
+
+For stage-only URLs in `docs/urls.txt`, use your stage token endpoint instead (for example `https://stage.id.trimblecloud.com/oauth2/token`).
 
 Use a secret manager or systemd credential/env-file mechanism for secrets; do not commit tokens or client secrets to git.
 

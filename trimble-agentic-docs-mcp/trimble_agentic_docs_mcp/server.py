@@ -249,7 +249,7 @@ def resolve_schema_ref(spec_id: str, ref: str) -> str:
 
 @mcp.tool()
 def list_documentation_urls() -> str:
-    """Return the contents of urls.txt (human docs + API index URLs on developer.stage.trimble-ai.com)."""
+    """Return the contents of urls.txt (human docs + API index URLs; host comes from that file)."""
     store = get_store()
     body = store.read_urls_file()
     return _truncate(body, 120_000)
