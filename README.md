@@ -7,7 +7,7 @@ Local assets for building against the **Trimble Agentic AI** developer APIs: exp
 | Path | Purpose |
 |------|--------|
 | `docs/api/` | OpenAPI 3.x JSON (`agents.json`, `tools.json`, …) — primary MCP source |
-| `docs/urls.txt` | Curated developer portal links (default host **`developer.ai.trimble.com`**) — must match your Trimble Identity environment |
+| `docs/urls.txt` | Curated portal links; **`## APIs`** should list static OpenAPI files (**`/specs/{segment}-openapi.json`**) — not the `/api/*` SPA routes in the browser |
 | `docs/mcp-llms-full.txt` | Optional MCP reference material (large) |
 | `trimble-agentic-docs-mcp/` | Python MCP package (Streamable HTTP only) |
 | `docs/cached/dev-portal/` | Optional: extracted text from **## Docs** (bundle in releases or CI) |

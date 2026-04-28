@@ -33,13 +33,14 @@ https://developer.ai.trimble.com/docs/build/sdk/examples/error-handling
 
 ## APIs
 
-https://developer.ai.trimble.com/api/agents
-https://developer.ai.trimble.com/api/models-control-plane
-https://developer.ai.trimble.com/api/models-inference
-https://developer.ai.trimble.com/api/ingest
-https://developer.ai.trimble.com/api/kb
-https://developer.ai.trimble.com/api/evals
-https://developer.ai.trimble.com/api/tools
+# Static OpenAPI JSON (same as "Download OpenAPI Document" in the portal UI — not the /api/* SPA routes).
+https://developer.ai.trimble.com/specs/agents-openapi.json
+https://developer.ai.trimble.com/specs/models-control-plane-openapi.json
+https://developer.ai.trimble.com/specs/models-inference-openapi.json
+https://developer.ai.trimble.com/specs/ingest-openapi.json
+https://developer.ai.trimble.com/specs/kb-openapi.json
+https://developer.ai.trimble.com/specs/evals-openapi.json
+https://developer.ai.trimble.com/specs/tools-openapi.json
 
 ## Other
 

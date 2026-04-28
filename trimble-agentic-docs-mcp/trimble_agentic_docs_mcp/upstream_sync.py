@@ -37,7 +37,13 @@ _DEFAULT_UA = "trimble-agentic-docs-mcp/0.1 (+https://github.com/trimble; enterp
 
 
 def _parse_api_urls_from_urls_txt(text: str) -> dict[str, str]:
-    """Return spec_id -> absolute URL for lines under '## APIs'."""
+    """Return spec_id -> absolute URL for lines under '## APIs'.
+
+    Supports:
+    - Legacy portal routes: ``.../api/{segment}`` (SPA shell; may not return raw OpenAPI).
+    - Published specs (recommended): ``.../specs/{segment}-openapi.json``
+      e.g. ``https://developer.ai.trimble.com/specs/agents-openapi.json``.
+    """
     lines = text.splitlines()
     in_apis = False
     out: dict[str, str] = {}
@@ -48,22 +54,30 @@ def _parse_api_urls_from_urls_txt(text: str) -> dict[str, str]:
             continue
         if not in_apis or not s.startswith("http"):
             continue
-        m = re.search(r"/api/([^/?#]+)/?\s*$", s.rstrip("/"))
-        if not m:
+        url = s.split()[0]
+        m_spec = re.search(r"/specs/([^/?#]+)-openapi\.json", url, re.IGNORECASE)
+        if m_spec:
+            segment = m_spec.group(1).lower()
+            spec_id = _API_PATH_TO_SPEC_ID.get(segment)
+            if spec_id:
+                out[spec_id] = url
             continue
-        segment = m.group(1)
+        m_api = re.search(r"/api/([^/?#]+)/?\s*$", url.rstrip("/"))
+        if not m_api:
+            continue
+        segment = m_api.group(1)
         spec_id = _API_PATH_TO_SPEC_ID.get(segment)
         if spec_id:
-            out[spec_id] = s.split()[0]
+            out[spec_id] = url
     return out
 
 
 def load_spec_source_urls(urls_file: Path | None) -> dict[str, str]:
     """Resolve OpenAPI download URLs: defaults for every spec, overridden by urls.txt ## APIs."""
     base = (
-        os.environ.get("TRIMBLE_AGENTIC_OPENAPI_FALLBACK_BASE") or "https://developer.ai.trimble.com/api"
+        os.environ.get("TRIMBLE_AGENTIC_OPENAPI_FALLBACK_BASE") or "https://developer.ai.trimble.com/specs"
     ).rstrip("/")
-    fallback = {sid: f"{base}/{path}" for path, sid in _API_PATH_TO_SPEC_ID.items()}
+    fallback = {sid: f"{base}/{path}-openapi.json" for path, sid in _API_PATH_TO_SPEC_ID.items()}
     if not urls_file or not urls_file.is_file():
         return fallback
     parsed = _parse_api_urls_from_urls_txt(urls_file.read_text(encoding="utf-8"))
