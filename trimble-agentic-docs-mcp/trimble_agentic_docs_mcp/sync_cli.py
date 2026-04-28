@@ -14,6 +14,9 @@ from trimble_agentic_docs_mcp.upstream_sync import run_openapi_sync
 
 
 def main() -> None:
+    from trimble_agentic_docs_mcp.repo_env import load_optional_repo_env
+
+    load_optional_repo_env()
     parser = argparse.ArgumentParser(
         description="Refresh local OpenAPI specs (/api/*) and/or extracted /docs HTML (see urls.txt).",
     )

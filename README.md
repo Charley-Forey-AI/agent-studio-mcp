@@ -11,6 +11,7 @@ Local assets for building against the **Trimble Agentic AI** developer APIs: exp
 | `docs/mcp-llms-full.txt` | Optional MCP reference material (large) |
 | `trimble-agentic-docs-mcp/` | Python MCP package (Streamable HTTP only) |
 | `docs/cached/dev-portal/` | Optional: extracted text from **## Docs** (bundle in releases or CI) |
+| `.env.example` | Template for local sync credentials; copy to **`.env`** (gitignored) — see [For operators](#for-operators-refreshing-artifacts--not-part-of-the-public-tool-list) |
 
 ## For integrators (default public MCP)
 
@@ -54,6 +55,8 @@ Default bind port is **8305** (override with `TRIMBLE_AGENTIC_MCP_PORT`). For a 
 ## For operators (refreshing artifacts — not part of the public tool list)
 
 Ship fresh `docs/api/` and optional `docs/cached/dev-portal/` using the CLI (CI or secure workstation), not end-user MCP tools:
+
+**Optional local credentials file:** copy [`.env.example`](.env.example) to **`.env`** at the repository root (gitignored). `trimble-agentic-openapi-sync` and `trimble-agentic-docs-refresh` load it automatically if present; variables already set in your shell take precedence. On servers, prefer **`/etc/default/...`** or a secret manager instead of committing `.env`.
 
 ```bash
 cd trimble-agentic-docs-mcp

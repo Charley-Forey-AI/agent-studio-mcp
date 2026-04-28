@@ -201,6 +201,9 @@ def run_refresh_cycle(
 
 
 def main() -> None:
+    from trimble_agentic_docs_mcp.repo_env import load_optional_repo_env
+
+    load_optional_repo_env()
     _configure_logging()
     parser = argparse.ArgumentParser(
         description="Refresh docs/api and docs/cached (ETag-aware by default). For weekly jobs use --once or --daemon.",
