@@ -83,6 +83,41 @@ trimble-agentic-docs-refresh --daemon --interval-hours 168
 
 Set **`TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN`** when the portal returns 401, same as the sync CLI. After artifacts change on disk, **restart the MCP process** (or rely on your deployment’s file reload policy) so long-running servers pick up new OpenAPI and cached docs.
 
+#### Automatic token refresh for scheduled jobs
+
+`trimble-agentic-docs-refresh` can mint a fresh bearer token before every cycle so weekly jobs do not fail on token expiry.
+
+Set these env vars on the refresh job host:
+
+- **Required:** `TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL`, `TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_ID`
+- **Optional (client credentials):** `TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_SECRET`, `TRIMBLE_AGENTIC_SYNC_OAUTH_SCOPE`
+- **Optional (refresh token flow):** `TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN`
+- **Optional tuning:** `TRIMBLE_AGENTIC_SYNC_OAUTH_GRANT_TYPE` (`client_credentials` or `refresh_token`), `TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_AUTH` (`body` or `basic`), `TRIMBLE_AGENTIC_SYNC_OAUTH_AUDIENCE`, `TRIMBLE_AGENTIC_SYNC_OAUTH_RESOURCE`
+
+Behavior:
+
+- If `TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL` is set, refresh runner obtains a new access token each cycle and exports it to `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` in-process.
+- If OAuth vars are not set, runner uses any pre-set `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` as-is.
+- Default grant selection is `refresh_token` when `TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN` is present, otherwise `client_credentials`.
+
+Example (client credentials):
+
+```bash
+export TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL="https://stage.id.trimblecloud.com/oauth2/token"
+export TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_ID="your_client_id"
+export TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_SECRET="your_client_secret"
+export TRIMBLE_AGENTIC_SYNC_OAUTH_SCOPE="openid agents tools models kb"
+trimble-agentic-docs-refresh --if-changed
+```
+
+Use a secret manager or systemd credential/env-file mechanism for secrets; do not commit tokens or client secrets to git.
+
+Systemd examples:
+
+- [`trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.service.example`](trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.service.example)
+- [`trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.timer.example`](trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.timer.example)
+- [`trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.env.example`](trimble-agentic-docs-mcp/examples/trimble-agentic-docs-refresh.env.example)
+
 ### Optional in-process admin MCP tools
 
 If you must sync from the running MCP process (unusual), set **`TRIMBLE_AGENTIC_MCP_ADMIN_TOOLS=1`** on the server. That exposes `refresh_api_docs_cache`, `get_openapi_sync_status`, `sync_openapi_from_upstream`, `sync_dev_docs_from_urls`, and `sync_all_upstream_content`. Non-dry writes still require **`TRIMBLE_AGENTIC_ALLOW_NETWORK=1`**. Public/hosted deployments should leave admin tools **disabled** (default).

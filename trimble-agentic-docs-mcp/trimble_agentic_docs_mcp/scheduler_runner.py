@@ -10,10 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from trimble_agentic_docs_mcp.dev_docs_sync import _default_dev_docs_cache_dir, run_dev_docs_sync
 from trimble_agentic_docs_mcp.store import _default_api_dir, _default_urls_file
@@ -29,6 +32,128 @@ def _configure_logging() -> None:
         datefmt="%Y-%m-%dT%H:%M:%SZ",
         stream=sys.stderr,
     )
+
+
+def _parse_token_response(resp: httpx.Response) -> tuple[str | None, int | None, str | None]:
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    access_token = payload.get("access_token")
+    expires_in_raw = payload.get("expires_in")
+    expires_in: int | None = None
+    if isinstance(expires_in_raw, int):
+        expires_in = expires_in_raw
+    elif isinstance(expires_in_raw, str) and expires_in_raw.isdigit():
+        expires_in = int(expires_in_raw)
+    err = payload.get("error_description") or payload.get("error")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None, expires_in, str(err) if err is not None else None
+    return access_token.strip(), expires_in, str(err) if err is not None else None
+
+
+def _refresh_bearer_token_from_oauth(timeout_s: float = 30.0) -> dict[str, Any]:
+    """
+    Optionally mint TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN from OAuth before each cycle.
+
+    Enabled when TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL is set.
+    Grant defaults to refresh_token when TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN is present,
+    otherwise client_credentials.
+    """
+    token_url = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL") or "").strip()
+    if not token_url:
+        return {"mode": "env-bearer", "used_oauth": False}
+
+    client_id = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_ID") or "").strip()
+    client_secret = os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_SECRET")
+    refresh_token = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN") or "").strip()
+    grant_type = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_GRANT_TYPE") or "").strip().lower()
+    scope = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_SCOPE") or "").strip()
+    audience = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_AUDIENCE") or "").strip()
+    resource = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_RESOURCE") or "").strip()
+    client_auth = (os.environ.get("TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_AUTH") or "body").strip().lower()
+
+    if grant_type not in ("", "client_credentials", "refresh_token"):
+        return {
+            "mode": "oauth",
+            "used_oauth": True,
+            "error": "invalid_grant_type",
+            "hint": "TRIMBLE_AGENTIC_SYNC_OAUTH_GRANT_TYPE must be client_credentials or refresh_token",
+        }
+    if not grant_type:
+        grant_type = "refresh_token" if refresh_token else "client_credentials"
+    if grant_type == "refresh_token" and not refresh_token:
+        return {
+            "mode": "oauth",
+            "used_oauth": True,
+            "grant_type": grant_type,
+            "error": "missing_refresh_token",
+            "hint": "Set TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN or use client_credentials grant",
+        }
+    if not client_id:
+        return {
+            "mode": "oauth",
+            "used_oauth": True,
+            "grant_type": grant_type,
+            "error": "missing_client_id",
+            "hint": "Set TRIMBLE_AGENTIC_SYNC_OAUTH_CLIENT_ID",
+        }
+
+    data: dict[str, str] = {"grant_type": grant_type, "client_id": client_id}
+    if grant_type == "refresh_token":
+        data["refresh_token"] = refresh_token
+    if scope:
+        data["scope"] = scope
+    if audience:
+        data["audience"] = audience
+    if resource:
+        data["resource"] = resource
+
+    auth: tuple[str, str] | None = None
+    if client_secret:
+        if client_auth == "basic":
+            auth = (client_id, client_secret)
+            data.pop("client_id", None)
+        else:
+            data["client_secret"] = client_secret
+
+    headers = {"Accept": "application/json"}
+    try:
+        with httpx.Client(timeout=timeout_s, follow_redirects=True) as client:
+            resp = client.post(token_url, data=data, headers=headers, auth=auth)
+    except httpx.HTTPError as e:
+        return {
+            "mode": "oauth",
+            "used_oauth": True,
+            "grant_type": grant_type,
+            "token_url": token_url,
+            "error": f"http_error:{e!s}",
+        }
+
+    access_token, expires_in, token_error = _parse_token_response(resp)
+    if resp.status_code != 200 or not access_token:
+        return {
+            "mode": "oauth",
+            "used_oauth": True,
+            "grant_type": grant_type,
+            "token_url": token_url,
+            "http_status": resp.status_code,
+            "error": token_error or f"oauth_http_{resp.status_code}",
+        }
+
+    os.environ["TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN"] = access_token
+    out: dict[str, Any] = {
+        "mode": "oauth",
+        "used_oauth": True,
+        "grant_type": grant_type,
+        "token_url": token_url,
+        "token_set": True,
+    }
+    if expires_in is not None:
+        out["expires_in_s"] = expires_in
+    return out
 
 
 def run_refresh_cycle(
@@ -125,6 +250,12 @@ def main() -> None:
     if_changed = bool(args.if_changed) and not args.full
 
     def one_shot() -> int:
+        auth_result = _refresh_bearer_token_from_oauth()
+        if auth_result.get("error"):
+            print(json.dumps({"auth": auth_result}, indent=2))
+            _log.error("auth bootstrap failed: %s", auth_result.get("error"))
+            return 1
+
         payload = run_refresh_cycle(
             api_dir=api_dir,
             urls=urls,
@@ -134,6 +265,7 @@ def main() -> None:
             openapi_only=args.openapi_only,
             dev_docs_only=args.dev_docs_only,
         )
+        payload["result"]["auth"] = auth_result
         print(json.dumps(payload["result"], indent=2))
         code = int(payload["exit_code"])
         if args.dry_run:

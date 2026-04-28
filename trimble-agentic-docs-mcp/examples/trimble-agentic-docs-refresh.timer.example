@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Trimble Agentic docs refresh weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30m
+Unit=trimble-agentic-docs-refresh.service
+
+[Install]
+WantedBy=timers.target

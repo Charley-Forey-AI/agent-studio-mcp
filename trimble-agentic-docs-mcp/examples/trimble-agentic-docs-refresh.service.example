@@ -1,0 +1,19 @@
+[Unit]
+Description=Trimble Agentic docs weekly refresh job
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/agent-studio-mcp
+Environment=TRIMBLE_AGENTIC_API_DOCS_DIR=/agent-studio-mcp/docs/api
+Environment=TRIMBLE_AGENTIC_URLS_FILE=/agent-studio-mcp/docs/urls.txt
+Environment=TRIMBLE_AGENTIC_DEV_DOCS_CACHE_DIR=/agent-studio-mcp/docs/cached/dev-portal
+# Put OAuth secrets in an env file outside git.
+EnvironmentFile=/etc/default/trimble-agentic-docs-refresh
+ExecStart=/agent-studio-mcp/.venv/bin/trimble-agentic-docs-refresh --if-changed
+
+[Install]
+WantedBy=multi-user.target
