@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import httpx
 import trafilatura
 
+from trimble_agentic_docs_mcp.http_auth_retry import request_with_optional_anonymous_retry
 from trimble_agentic_docs_mcp.upstream_sync import _normalize_etag
 
 _DEV_MANIFEST = "manifest.json"
@@ -145,7 +146,8 @@ def run_dev_docs_sync(
                     prev_row = prev_pages.get(pid) if isinstance(prev_pages.get(pid), dict) else {}
                     prev_etag = _normalize_etag(prev_row.get("etag"))
                     try:
-                        hr = client.head(url, headers=headers)
+                        hr, head_meta = request_with_optional_anonymous_retry(client, "HEAD", url, headers)
+                        one.update(head_meta)
                         one["head_status"] = hr.status_code
                         if hr.status_code == 200:
                             remote_etag = _normalize_etag(hr.headers.get("etag"))
@@ -158,7 +160,8 @@ def run_dev_docs_sync(
                     except httpx.HTTPError:
                         pass
 
-                r = client.get(url, headers=headers)
+                r, get_meta = request_with_optional_anonymous_retry(client, "GET", url, headers)
+                one.update(get_meta)
                 one["http_status"] = r.status_code
                 one["etag"] = r.headers.get("etag")
                 body = r.text or ""

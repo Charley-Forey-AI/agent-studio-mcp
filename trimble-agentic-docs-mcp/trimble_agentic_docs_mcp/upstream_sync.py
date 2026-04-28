@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from trimble_agentic_docs_mcp.http_auth_retry import request_with_optional_anonymous_retry
+
 # Path segment in /api/{segment} -> local filename stem (without .json)
 _API_PATH_TO_SPEC_ID: dict[str, str] = {
     "agents": "agents",
@@ -184,7 +186,8 @@ def run_openapi_sync(
                         (prev_entries.get(spec_id) or {}).get("etag") if isinstance(prev_entries.get(spec_id), dict) else None
                     )
                     try:
-                        hr = client.head(url, headers=headers)
+                        hr, head_meta = request_with_optional_anonymous_retry(client, "HEAD", url, headers)
+                        one.update(head_meta)
                         one["head_status"] = hr.status_code
                         if hr.status_code == 200:
                             remote_etag = _normalize_etag(hr.headers.get("etag"))
@@ -197,7 +200,8 @@ def run_openapi_sync(
                     except httpx.HTTPError:
                         pass
 
-                r = client.get(url, headers=headers)
+                r, get_meta = request_with_optional_anonymous_retry(client, "GET", url, headers)
+                one.update(get_meta)
                 one["http_status"] = r.status_code
                 one["etag"] = r.headers.get("etag")
                 one["last_modified"] = r.headers.get("last-modified")

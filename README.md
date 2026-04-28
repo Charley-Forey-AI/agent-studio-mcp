@@ -72,6 +72,8 @@ Flags: `--openapi-only`, `--dev-docs-only`, `--dry-run`, `--dev-docs-cache-dir`,
 
 This updates `docs/api/*.json` plus `docs/api/_openapi_manifest.json`, and `docs/cached/dev-portal/pages/*.json` plus `manifest.json`. You do not need to hand-edit JSON under `docs/api/` when switching portal hosts—run a full sync after changing `docs/urls.txt`.
 
+If OpenAPI or docs URLs return **401** with `Authorization: Bearer` but work **without** it (common for public `/specs/*.json`), sync automatically **retries once without Bearer**. To disable that behavior, set **`TRIMBLE_AGENTIC_SYNC_NO_AUTH_RETRY=1`**.
+
 ### Weekly refresh (hands-off)
 
 Use **`trimble-agentic-docs-refresh`** for scheduled jobs (Kubernetes CronJob, systemd timer, Windows Task Scheduler, or a small VM). By default it runs **once** with **ETag-aware skips** so unchanged specs and doc pages are not re-downloaded. Output is JSON on stdout; progress logs go to stderr.
