@@ -100,6 +100,7 @@ Set these env vars on the refresh job host:
 Behavior:
 
 - If `TRIMBLE_AGENTIC_SYNC_OAUTH_TOKEN_URL` is set, refresh runner obtains a new access token each cycle and exports it to `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` in-process.
+- **Issuer must match the portal:** URLs in `docs/urls.txt` use **`developer.stage.trimble-ai.com`**, so use the **stage** token endpoint (for example `https://stage.id.trimblecloud.com/oauth2/token`). A token from **`id.trimble.com`** (production) typically gets **401** on stage.
 - If OAuth vars are not set, runner uses any pre-set `TRIMBLE_AGENTIC_SYNC_BEARER_TOKEN` as-is.
 - Default grant selection is `refresh_token` when `TRIMBLE_AGENTIC_SYNC_OAUTH_REFRESH_TOKEN` is present, otherwise `client_credentials`.
 
